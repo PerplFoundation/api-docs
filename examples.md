@@ -5,18 +5,19 @@ Complete examples for common API operations.
 ## Setup
 
 ```typescript
-const API_URL = 'https://testnet.perpl.xyz/api';
-const WS_URL = 'wss://testnet.perpl.xyz';  // Note: WebSocket doesn't use /api prefix
-const CHAIN_ID = 10143;
+// Load from environment (or use defaults for testnet)
+const API_URL = process.env.PERPL_API_URL || 'https://testnet.perpl.xyz/api';
+const WS_URL = process.env.PERPL_WS_URL || 'wss://testnet.perpl.xyz';  // Note: WebSocket doesn't use /api prefix
+const CHAIN_ID = Number(process.env.PERPL_CHAIN_ID) || 10143;
 
-// Market IDs
+// Market IDs (consistent across networks)
 const MARKETS = {
   BTC: 16,
   ETH: 32,
   SOL: 48,
   MON: 64,
   ZEC: 256
-};
+} as const;
 ```
 
 ---
@@ -43,12 +44,17 @@ async function authenticate(privateKey: `0x${string}`, address: string) {
     privateKey
   });
 
-  // Step 3: Connect
+  // Step 3: Connect (chain_id and address must be included!)
   const connectRes = await fetch(`${API_URL}/v1/auth/connect`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
-    body: JSON.stringify({ ...payload, signature })
+    body: JSON.stringify({
+      chain_id: CHAIN_ID,
+      address,
+      ...payload,
+      signature
+    })
   });
 
   if (!connectRes.ok) {

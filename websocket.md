@@ -9,9 +9,9 @@ Perpl provides two WebSocket endpoints for real-time data.
 | `/ws/v1/market-data` | Public market data | None |
 | `/ws/v1/trading` | Trading & account data | Required |
 
-**URLs**:
-- Market Data: `wss://testnet.perpl.xyz/ws/v1/market-data`
-- Trading: `wss://testnet.perpl.xyz/ws/v1/trading`
+**URLs** (configurable via `PERPL_WS_URL`, default: `wss://testnet.perpl.xyz`):
+- Market Data: `${PERPL_WS_URL}/ws/v1/market-data`
+- Trading: `${PERPL_WS_URL}/ws/v1/trading`
 
 ## Message Format
 
@@ -65,7 +65,8 @@ interface MessageHeader {
 ### Connecting
 
 ```typescript
-const ws = new WebSocket('wss://testnet.perpl.xyz/ws/v1/market-data');
+const WS_URL = process.env.PERPL_WS_URL || 'wss://testnet.perpl.xyz';
+const ws = new WebSocket(`${WS_URL}/ws/v1/market-data`);
 ```
 
 ### Available Streams
@@ -81,7 +82,7 @@ const ws = new WebSocket('wss://testnet.perpl.xyz/ws/v1/market-data');
 | order-book | `order-book@<market_id>` | L2 order book |
 | trades | `trades@<market_id>` | Recent trades |
 
-**Chain ID**: 10143 (Monad Testnet)
+**Chain ID**: Configurable via `PERPL_CHAIN_ID` (default: 10143 for Monad Testnet)
 
 **Candle Resolutions** (seconds): 60, 300, 900, 1800, 3600, 7200, 14400, 28800, 43200, 86400
 
@@ -215,13 +216,16 @@ interface Heartbeat {
 ### Connecting & Authenticating
 
 ```typescript
-const ws = new WebSocket('wss://testnet.perpl.xyz/ws/v1/trading');
+const WS_URL = process.env.PERPL_WS_URL || 'wss://testnet.perpl.xyz';
+const CHAIN_ID = Number(process.env.PERPL_CHAIN_ID) || 10143;
+
+const ws = new WebSocket(`${WS_URL}/ws/v1/trading`);
 
 ws.onopen = () => {
   // Must authenticate immediately
   ws.send(JSON.stringify({
     mt: 4,  // AuthSignIn
-    chain_id: 10143,
+    chain_id: CHAIN_ID,
     nonce: authNonce,  // From /api/v1/auth/connect
     ses: crypto.randomUUID()
   }));

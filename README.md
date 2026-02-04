@@ -11,15 +11,17 @@ The Perpl API provides two communication channels:
 | REST API | HTTPS | History queries, authentication, profile | Varies |
 | WebSocket | WSS | Real-time data, trading | Varies |
 
-**Base URL**: `https://testnet.perpl.xyz/api`
+**Base URL**: Configured via environment (see [Configuration](#configuration))
 
 ## Quick Start
 
 ### 1. Get Market Data (No Auth)
 
 ```typescript
+const API_URL = process.env.PERPL_API_URL || 'https://testnet.perpl.xyz/api';
+
 // Fetch context (markets, tokens, chain config)
-const context = await fetch('https://testnet.perpl.xyz/api/v1/pub/context')
+const context = await fetch(`${API_URL}/v1/pub/context`)
   .then(r => r.json());
 
 console.log(context.markets); // Available markets
@@ -29,7 +31,9 @@ console.log(context.chain);   // Chain configuration
 ### 2. Connect to Market Data WebSocket
 
 ```typescript
-const ws = new WebSocket('wss://testnet.perpl.xyz/ws/v1/market-data');
+const WS_URL = process.env.PERPL_WS_URL || 'wss://testnet.perpl.xyz';
+
+const ws = new WebSocket(`${WS_URL}/ws/v1/market-data`);
 
 ws.onopen = () => {
   // Subscribe to BTC order book (market_id=16)
@@ -50,24 +54,30 @@ ws.onmessage = (event) => {
 > **Note**: Authentication requires a **whitelisted wallet**. Non-whitelisted wallets will receive HTTP 418 (Access code required). See [Wallet Requirements](#wallet-requirements) below.
 
 ```typescript
+const API_URL = process.env.PERPL_API_URL || 'https://testnet.perpl.xyz/api';
+const CHAIN_ID = Number(process.env.PERPL_CHAIN_ID) || 10143;
+const address = '0xYourWalletAddress';
+
 // Step 1: Get signing payload
-const payload = await fetch('https://testnet.perpl.xyz/api/v1/auth/payload', {
+const payload = await fetch(`${API_URL}/v1/auth/payload`, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({
-    chain_id: 10143,
-    address: '0xYourWalletAddress'
+    chain_id: CHAIN_ID,
+    address
   })
 }).then(r => r.json());
 
 // Step 2: Sign the SIWE message with your wallet
 const signature = await wallet.signMessage({ message: payload.message });
 
-// Step 3: Connect with signature
-const auth = await fetch('https://testnet.perpl.xyz/api/v1/auth/connect', {
+// Step 3: Connect with signature (chain_id and address required!)
+const auth = await fetch(`${API_URL}/v1/auth/connect`, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({
+    chain_id: CHAIN_ID,
+    address,
     ...payload,
     signature
   })
@@ -86,7 +96,24 @@ const auth = await fetch('https://testnet.perpl.xyz/api/v1/auth/connect', {
 | [Types](./types.md) | Data type reference |
 | [Examples](./examples.md) | Code examples |
 
-## Chain Configuration
+## Configuration
+
+All URLs and chain settings are configurable via environment variables. Copy `.env.example` to `.env`:
+
+```bash
+cp .env.example .env
+```
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PERPL_API_URL` | `https://testnet.perpl.xyz/api` | REST API base URL |
+| `PERPL_WS_URL` | `wss://testnet.perpl.xyz` | WebSocket base URL |
+| `PERPL_CHAIN_ID` | `10143` | Chain ID |
+| `PERPL_RPC_URL` | `https://testnet-rpc.monad.xyz` | RPC URL for on-chain ops |
+| `PERPL_EXCHANGE_ADDRESS` | `0x9c216d...` | Exchange contract |
+| `PERPL_COLLATERAL_TOKEN` | `0xdf5b71...` | USD collateral token |
+
+## Chain Configuration (Testnet)
 
 | Property | Value |
 |----------|-------|

@@ -1,0 +1,16 @@
+# Environment files (contain secrets)
+.env
+.env.local
+.env.*.local
+
+# Keep the example
+!.env.example
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+*.swp
+*.swo
+*~
