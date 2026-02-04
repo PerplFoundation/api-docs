@@ -86,6 +86,8 @@ const auth = await fetch(`${API_URL}/v1/auth/connect`, {
 // auth.nonce is used for authenticated requests
 ```
 
+> **Important**: Successful API authentication does NOT mean you have an exchange account. See [API Auth vs Smart Contract Account](#api-auth-vs-smart-contract-account) below.
+
 ## API Reference
 
 | Document | Description |
@@ -246,3 +248,65 @@ To get your wallet whitelisted on Perpl testnet:
 2. Connect your wallet
 3. Request access or use a referral code if available
 4. Once approved, your wallet can authenticate via the API
+
+## API Auth vs Smart Contract Account
+
+**This is a common source of confusion.** API authentication and smart contract account creation are completely separate:
+
+| Concept | What It Means | Required For |
+|---------|---------------|--------------|
+| **API Authentication** | Wallet is whitelisted and can call authenticated API endpoints | Reading order history, position history, trading WebSocket |
+| **Exchange Account** | On-chain account exists on Exchange contract with collateral | Placing orders, holding positions, trading |
+
+### Key Points
+
+1. **API auth does NOT create an exchange account**
+   - The `/auth` endpoint only verifies your wallet is whitelisted
+   - A successful auth response means you can use authenticated API endpoints
+   - It does NOT mean you can trade
+
+2. **Exchange account must be created on-chain**
+   - Call `createAccount(uint256 amountCNS)` on the Exchange contract
+   - Requires initial collateral deposit (USDC)
+   - This creates your account ID and enables trading
+
+3. **Both are required for full functionality**
+   - API auth → Access trading history, real-time data via authenticated endpoints
+   - Exchange account → Actually place orders and hold positions
+
+### Checking Account Status
+
+```typescript
+// Check if wallet has an exchange account
+const Exchange = await getContract('Exchange');
+const accountInfo = await Exchange.read.getAccountByAddr([walletAddress]);
+
+if (accountInfo.accountId === 0n) {
+  console.log('No exchange account exists - need to create one');
+} else {
+  console.log(`Account ID: ${accountInfo.accountId}`);
+  console.log(`Balance: ${accountInfo.balanceCNS / 1e6} USD`);
+}
+```
+
+### Creating an Exchange Account
+
+```typescript
+// 1. Approve collateral token
+const USDC = await getContract('USDC');
+await USDC.write.approve([EXCHANGE_ADDRESS, depositAmount]);
+
+// 2. Create account with initial deposit
+const Exchange = await getContract('Exchange');
+await Exchange.write.createAccount([depositAmount]); // depositAmount in CNS (6 decimals)
+
+// Account now exists and can trade
+```
+
+### Common Error Scenarios
+
+| Symptom | Cause | Solution |
+|---------|-------|----------|
+| API auth succeeds but `getAccountByAddr` returns `accountId: 0` | Wallet is whitelisted but no on-chain account | Create account with `createAccount()` |
+| Can read order history but can't place orders | API works but no exchange account | Create account with `createAccount()` |
+| HTTP 418 on `/auth/connect` | Wallet not whitelisted | Get whitelisted (see above) |
