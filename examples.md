@@ -5,18 +5,16 @@ Complete examples for common API operations.
 ## Setup
 
 ```typescript
-// Load from environment (or use defaults for testnet)
-const API_URL = process.env.PERPL_API_URL || 'https://testnet.perpl.xyz/api';
-const WS_URL = process.env.PERPL_WS_URL || 'wss://testnet.perpl.xyz';  // Note: WebSocket doesn't use /api prefix
-const CHAIN_ID = Number(process.env.PERPL_CHAIN_ID) || 10143;
+// Load from environment (or use defaults for mainnet)
+const API_URL = process.env.PERPL_API_URL || 'https://perpl.xyz/api';
+const WS_URL = process.env.PERPL_WS_URL || 'wss://perpl.xyz';  // Note: WebSocket doesn't use /api prefix
+const CHAIN_ID = Number(process.env.PERPL_CHAIN_ID) || 143;
 
-// Market IDs (consistent across networks)
+// Market IDs for mainnet
+// Note: Testnet uses different IDs (BTC=16, ETH=32, SOL=48, MON=64, ZEC=256)
 const MARKETS = {
-  BTC: 16,
-  ETH: 32,
-  SOL: 48,
-  MON: 64,
-  ZEC: 256
+  BTC: 1,
+  MON: 10,
 } as const;
 ```
 
@@ -411,7 +409,7 @@ client.connect();
 // Wait for connection and snapshots...
 setTimeout(async () => {
   // Open 0.1 BTC long at market price with 10x leverage
-  // Note: size needs to be scaled (5 decimals for BTC)
+  // Note: size needs to be scaled (5 decimals for BTC on mainnet)
   const requestId = await client.openLong(MARKETS.BTC, 10000, null, 10);
   console.log('Order submitted:', requestId);
 }, 2000);

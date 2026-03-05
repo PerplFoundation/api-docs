@@ -1,6 +1,6 @@
 # REST API Endpoints
 
-Base URL: `${PERPL_API_URL}` (default: `https://testnet.perpl.xyz/api`)
+Base URL: `${PERPL_API_URL}` (default: `https://perpl.xyz/api`)
 
 ## Public Endpoints
 
@@ -24,10 +24,10 @@ interface Context {
 **Example**:
 ```bash
 # Using default testnet URL
-curl https://testnet.perpl.xyz/api/v1/pub/context
+curl https://perpl.xyz/api/v1/pub/context
 
 # Or using environment variable
-curl ${PERPL_API_URL:-https://testnet.perpl.xyz/api}/v1/pub/context
+curl ${PERPL_API_URL:-https://perpl.xyz/api}/v1/pub/context
 ```
 
 ---
@@ -41,7 +41,7 @@ Returns OHLCV candlestick data.
 **URL Parameters**:
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| market_id | number | Market ID (e.g., 16 for BTC) |
+| market_id | number | Market ID (e.g., 1 for BTC on mainnet) |
 | resolution | number | Candle resolution in seconds |
 | from | number | Start timestamp (ms) |
 | to | number | End timestamp (ms) |
@@ -84,10 +84,10 @@ interface Candle {
 **Example**:
 ```bash
 # Get 1-hour BTC candles for last 24 hours
-API_URL=${PERPL_API_URL:-https://testnet.perpl.xyz/api}
+API_URL=${PERPL_API_URL:-https://perpl.xyz/api}
 FROM=$(($(date +%s) * 1000 - 86400000))
 TO=$(($(date +%s) * 1000))
-curl "${API_URL}/v1/market-data/16/candles/3600/${FROM}-${TO}"
+curl "${API_URL}/v1/market-data/1/candles/3600/${FROM}-${TO}"
 ```
 
 ---
@@ -103,7 +103,7 @@ Request signing payload for wallet authentication.
 **Request**:
 ```typescript
 interface AuthPayloadRequest {
-  chain_id: number;  // 10143
+  chain_id: number;  // 143 (mainnet) or 10143 (testnet)
   address: string;   // Wallet address
 }
 ```
@@ -356,7 +356,7 @@ See [Types](./types.md#position) for Position structure.
 ## Pagination Example
 
 ```typescript
-const API_URL = process.env.PERPL_API_URL || 'https://testnet.perpl.xyz/api';
+const API_URL = process.env.PERPL_API_URL || 'https://perpl.xyz/api';
 
 async function fetchAllFills(authNonce: string) {
   const fills: Fill[] = [];

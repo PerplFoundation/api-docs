@@ -18,7 +18,7 @@ The Perpl API provides two communication channels:
 ### 1. Get Market Data (No Auth)
 
 ```typescript
-const API_URL = process.env.PERPL_API_URL || 'https://testnet.perpl.xyz/api';
+const API_URL = process.env.PERPL_API_URL || 'https://perpl.xyz/api';
 
 // Fetch context (markets, tokens, chain config)
 const context = await fetch(`${API_URL}/v1/pub/context`)
@@ -31,15 +31,15 @@ console.log(context.chain);   // Chain configuration
 ### 2. Connect to Market Data WebSocket
 
 ```typescript
-const WS_URL = process.env.PERPL_WS_URL || 'wss://testnet.perpl.xyz';
+const WS_URL = process.env.PERPL_WS_URL || 'wss://perpl.xyz';
 
 const ws = new WebSocket(`${WS_URL}/ws/v1/market-data`);
 
 ws.onopen = () => {
-  // Subscribe to BTC order book (market_id=16)
+  // Subscribe to BTC order book (market_id=1 on mainnet)
   ws.send(JSON.stringify({
     mt: 5, // MsgTypeSubscriptionRequest
-    subs: [{ stream: 'order-book@16', subscribe: true }]
+    subs: [{ stream: 'order-book@1', subscribe: true }]
   }));
 };
 
@@ -54,8 +54,8 @@ ws.onmessage = (event) => {
 > **Note**: Authentication requires a **whitelisted wallet**. Non-whitelisted wallets will receive HTTP 418 (Access code required). See [Wallet Requirements](#wallet-requirements) below.
 
 ```typescript
-const API_URL = process.env.PERPL_API_URL || 'https://testnet.perpl.xyz/api';
-const CHAIN_ID = Number(process.env.PERPL_CHAIN_ID) || 10143;
+const API_URL = process.env.PERPL_API_URL || 'https://perpl.xyz/api';
+const CHAIN_ID = Number(process.env.PERPL_CHAIN_ID) || 143;
 const address = '0xYourWalletAddress';
 
 // Step 1: Get signing payload
@@ -108,32 +108,46 @@ cp .env.example .env
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PERPL_API_URL` | `https://testnet.perpl.xyz/api` | REST API base URL |
-| `PERPL_WS_URL` | `wss://testnet.perpl.xyz` | WebSocket base URL |
-| `PERPL_CHAIN_ID` | `10143` | Chain ID |
-| `PERPL_RPC_URL` | `https://testnet-rpc.monad.xyz` | RPC URL for on-chain ops |
-| `PERPL_EXCHANGE_ADDRESS` | `0x9c216d...` | Exchange contract |
-| `PERPL_COLLATERAL_TOKEN` | `0xdf5b71...` | USD collateral token |
+| `PERPL_API_URL` | `https://perpl.xyz/api` | REST API base URL |
+| `PERPL_WS_URL` | `wss://perpl.xyz` | WebSocket base URL |
+| `PERPL_CHAIN_ID` | `143` | Chain ID |
+| `PERPL_RPC_URL` | `https://rpc.monad.xyz` | RPC URL for on-chain ops |
+| `PERPL_EXCHANGE_ADDRESS` | `0x34B6552d...` | Exchange contract |
+| `PERPL_COLLATERAL_TOKEN` | `0x00000000eF...` | AUSD collateral token |
 
-## Chain Configuration (Testnet)
+## Network Configuration
 
-| Property | Value |
-|----------|-------|
-| Chain ID | 10143 |
-| Network | Monad Testnet |
-| Exchange Contract | `0x9c216d1ab3e0407b3d6f1d5e9effe6d01c326ab7` |
-| Collateral Token | `0xdf5b718d8fcc173335185a2a1513ee8151e3c027` (USD) |
-| RPC URL | `https://testnet-rpc.monad.xyz` |
+Perpl runs on both **Mainnet** (default) and **Testnet**.
+
+| | Mainnet (default) | Testnet |
+|---|---|---|
+| REST API | `https://perpl.xyz/api` | `https://testnet.perpl.xyz/api` |
+| WebSocket | `wss://perpl.xyz` | `wss://testnet.perpl.xyz` |
+| Chain ID | `143` | `10143` |
+| RPC | `https://rpc.monad.xyz` | `https://testnet-rpc.monad.xyz` |
+| Exchange | `0x34B6552d57a35a1D042CcAe1951BD1C370112a6F` | `0x9c216d1ab3e0407b3d6f1d5e9effe6d01c326ab7` |
+| Collateral | `0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a` (AUSD) | `0xdf5b718d8fcc173335185a2a1513ee8151e3c027` (USD) |
+
+To use testnet, set the environment variables to testnet values.
 
 ## Markets
 
-| Market ID | Symbol | Perp ID |
-|-----------|--------|---------|
-| 16 | BTC | 16 |
-| 32 | ETH | 32 |
-| 48 | SOL | 48 |
-| 64 | MON | 64 |
-| 256 | ZEC | 256 |
+Market IDs differ between networks:
+
+**Mainnet**:
+| Market ID | Symbol |
+|-----------|--------|
+| 1 | BTC |
+| 10 | MON |
+
+**Testnet**:
+| Market ID | Symbol |
+|-----------|--------|
+| 16 | BTC |
+| 32 | ETH |
+| 48 | SOL |
+| 64 | MON |
+| 256 | ZEC |
 
 ## Rate Limits
 
@@ -189,7 +203,7 @@ async function fetchWithRetry(url: string, options: RequestInit, maxRetries = 3)
 
 ### Whitelisted Wallet Required
 
-The Perpl testnet requires a **whitelisted wallet** to access authenticated endpoints. When authenticating with a non-whitelisted wallet, you'll receive:
+Perpl requires a **whitelisted wallet** to access authenticated endpoints. When authenticating with a non-whitelisted wallet, you'll receive:
 
 - **HTTP 418**: Access code required - wallet is not on the whitelist
 - **HTTP 423**: Access code invalid/exhausted - referral code was invalid
@@ -242,9 +256,9 @@ npx tsx scripts/test-auth-endpoints.ts
 
 ### Getting Whitelisted
 
-To get your wallet whitelisted on Perpl testnet:
+To get your wallet whitelisted on Perpl:
 
-1. Visit [testnet.perpl.xyz](https://testnet.perpl.xyz)
+1. Visit [perpl.xyz](https://perpl.xyz) (or [testnet.perpl.xyz](https://testnet.perpl.xyz) for testnet)
 2. Connect your wallet
 3. Request access or use a referral code if available
 4. Once approved, your wallet can authenticate via the API

@@ -32,7 +32,7 @@ Perpl uses wallet signature authentication with JWT cookies for session manageme
 **Request**:
 ```typescript
 interface AuthPayloadRequest {
-  chain_id: number;  // 10143 for Monad Testnet
+  chain_id: number;  // 143 for Monad Mainnet, 10143 for Testnet
   address: string;   // Wallet address (0x...)
 }
 ```
@@ -49,8 +49,8 @@ interface AuthPayloadResponse {
 
 **Example**:
 ```typescript
-const API_URL = process.env.PERPL_API_URL || 'https://testnet.perpl.xyz/api';
-const CHAIN_ID = Number(process.env.PERPL_CHAIN_ID) || 10143;
+const API_URL = process.env.PERPL_API_URL || 'https://perpl.xyz/api';
+const CHAIN_ID = Number(process.env.PERPL_CHAIN_ID) || 143;
 
 const response = await fetch(`${API_URL}/v1/auth/payload`, {
   method: 'POST',
@@ -118,8 +118,8 @@ interface AuthConnectResponse {
 
 **Example**:
 ```typescript
-const API_URL = process.env.PERPL_API_URL || 'https://testnet.perpl.xyz/api';
-const CHAIN_ID = Number(process.env.PERPL_CHAIN_ID) || 10143;
+const API_URL = process.env.PERPL_API_URL || 'https://perpl.xyz/api';
+const CHAIN_ID = Number(process.env.PERPL_CHAIN_ID) || 143;
 const address = '0x1234567890abcdef1234567890abcdef12345678';
 
 const authResponse = await fetch(`${API_URL}/v1/auth/connect`, {
@@ -150,7 +150,7 @@ const auth = await authResponse.json();
 After authentication, use these headers for authenticated REST requests:
 
 ```typescript
-const API_URL = process.env.PERPL_API_URL || 'https://testnet.perpl.xyz/api';
+const API_URL = process.env.PERPL_API_URL || 'https://perpl.xyz/api';
 
 const headers = {
   'Content-Type': 'application/json',
@@ -169,8 +169,8 @@ const response = await fetch(`${API_URL}/v1/profile/ref-code`, {
 For the trading WebSocket, send `AuthSignIn` after connecting:
 
 ```typescript
-const WS_URL = process.env.PERPL_WS_URL || 'wss://testnet.perpl.xyz';
-const CHAIN_ID = Number(process.env.PERPL_CHAIN_ID) || 10143;
+const WS_URL = process.env.PERPL_WS_URL || 'wss://perpl.xyz';
+const CHAIN_ID = Number(process.env.PERPL_CHAIN_ID) || 143;
 
 const ws = new WebSocket(`${WS_URL}/ws/v1/trading`);
 

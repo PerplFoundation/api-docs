@@ -9,7 +9,7 @@ Perpl provides two WebSocket endpoints for real-time data.
 | `/ws/v1/market-data` | Public market data | None |
 | `/ws/v1/trading` | Trading & account data | Required |
 
-**URLs** (configurable via `PERPL_WS_URL`, default: `wss://testnet.perpl.xyz`):
+**URLs** (configurable via `PERPL_WS_URL`, default: `wss://perpl.xyz`):
 - Market Data: `${PERPL_WS_URL}/ws/v1/market-data`
 - Trading: `${PERPL_WS_URL}/ws/v1/trading`
 
@@ -65,7 +65,7 @@ interface MessageHeader {
 ### Connecting
 
 ```typescript
-const WS_URL = process.env.PERPL_WS_URL || 'wss://testnet.perpl.xyz';
+const WS_URL = process.env.PERPL_WS_URL || 'wss://perpl.xyz';
 const ws = new WebSocket(`${WS_URL}/ws/v1/market-data`);
 ```
 
@@ -82,7 +82,7 @@ const ws = new WebSocket(`${WS_URL}/ws/v1/market-data`);
 | order-book | `order-book@<market_id>` | L2 order book |
 | trades | `trades@<market_id>` | Recent trades |
 
-**Chain ID**: Configurable via `PERPL_CHAIN_ID` (default: 10143 for Monad Testnet)
+**Chain ID**: Configurable via `PERPL_CHAIN_ID` (default: 143 for Monad Mainnet)
 
 **Candle Resolutions** (seconds): 60, 300, 900, 1800, 3600, 7200, 14400, 28800, 43200, 86400
 
@@ -93,10 +93,10 @@ const ws = new WebSocket(`${WS_URL}/ws/v1/market-data`);
 ws.send(JSON.stringify({
   mt: 5,  // SubscriptionRequest
   subs: [
-    { stream: 'heartbeat@10143', subscribe: true },
-    { stream: 'order-book@16', subscribe: true },    // BTC order book
-    { stream: 'trades@16', subscribe: true },        // BTC trades
-    { stream: 'candles@16*3600', subscribe: true }   // BTC 1h candles
+    { stream: 'heartbeat@143', subscribe: true },
+    { stream: 'order-book@1', subscribe: true },     // BTC order book (mainnet)
+    { stream: 'trades@1', subscribe: true },         // BTC trades (mainnet)
+    { stream: 'candles@1*3600', subscribe: true }    // BTC 1h candles (mainnet)
   ]
 }));
 ```
@@ -216,8 +216,8 @@ interface Heartbeat {
 ### Connecting & Authenticating
 
 ```typescript
-const WS_URL = process.env.PERPL_WS_URL || 'wss://testnet.perpl.xyz';
-const CHAIN_ID = Number(process.env.PERPL_CHAIN_ID) || 10143;
+const WS_URL = process.env.PERPL_WS_URL || 'wss://perpl.xyz';
+const CHAIN_ID = Number(process.env.PERPL_CHAIN_ID) || 143;
 
 const ws = new WebSocket(`${WS_URL}/ws/v1/trading`);
 
@@ -288,7 +288,7 @@ interface OrderRequest {
 ws.send(JSON.stringify({
   mt: 22,
   rq: Date.now(),              // Unique request ID
-  mkt: 16,                     // BTC market
+  mkt: 1,                      // BTC market (mainnet)
   acc: accountId,              // Your account ID
   t: 1,                        // OpenLong
   p: 95000 * 10,               // Price $95,000 (1 decimal)
@@ -311,7 +311,7 @@ ws.send(JSON.stringify({
 ws.send(JSON.stringify({
   mt: 22,
   rq: Date.now(),
-  mkt: 16,
+  mkt: 1,
   acc: accountId,
   oid: orderIdToCancel,
   t: 5,  // Cancel
