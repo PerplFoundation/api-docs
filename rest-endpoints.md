@@ -137,6 +137,7 @@ interface AuthConnectRequest {
   mac: string;
   signature: string;
   ref_code?: string;
+  target_profile?: string;  // Target profile to sign in to
 }
 ```
 
@@ -144,6 +145,7 @@ interface AuthConnectRequest {
 ```typescript
 interface AuthConnectResponse {
   nonce: string;
+  available_profiles: string[];  // Profiles available for this wallet
 }
 ```
 
@@ -292,6 +294,7 @@ interface AccountEvent {
 | 9 | Deleveraging |
 | 10 | Unwinding |
 | 11 | PositionCollateralDecreased |
+| 12 | LastForwardedDescIdReset |
 
 ---
 
