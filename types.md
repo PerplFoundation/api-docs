@@ -308,11 +308,13 @@ Common values:
 | 16 | ImmediateOrCancelExecuted |
 | 22 | MakerOrderFilled |
 | 28 | OrderCancelled |
+| 32 | OrderDescIdTooLow |
 | 35 | OrderPlaced |
+| 36 | OrderPostFailed |
 | 43 | TakerOrderFilled |
 | 46 | UnmatchedLotRemainsInFillOrKill |
 
-See spec.ts for full list (56 values).
+These are the most common values. The full list has 56 entries.
 
 ---
 
@@ -390,6 +392,21 @@ interface Position {
 | 5 | Unwound |
 | 6 | Failed |
 
+### PositionStatusReason
+
+Common values:
+
+| Value | Name |
+|-------|------|
+| 13 | PositionClosed |
+| 14 | PositionDecreased |
+| 15 | PositionDeleveraged |
+| 17 | PositionIncreased |
+| 18 | PositionInverted |
+| 19 | PositionLiquidated |
+| 21 | PositionOpened |
+| 22 | PositionUnwound |
+
 ---
 
 ## Account & Wallet
@@ -416,6 +433,7 @@ interface Account {
   id: AccountID;
   fr: boolean;      // Is frozen
   fw: boolean;      // Allows forwarding
+  lfr: RequestID;   // Last forwarded request ID (use to seed `rq` generation)
   b: Amount;        // Balance
   lb: Amount;       // Locked balance
   h?: AccountEvent[];
@@ -457,6 +475,7 @@ interface AccountEvent {
 | 9 | Deleveraging |
 | 10 | Unwinding |
 | 11 | PositionCollateralDecreased |
+| 12 | LastForwardedDescIdReset |
 
 ---
 

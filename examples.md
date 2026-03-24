@@ -240,6 +240,7 @@ class TradingClient {
   private requestId = Date.now();
   private accountId: number;
   private currentBlock: number = 0;
+  private lastSn?: number;
   private pingInterval?: ReturnType<typeof setInterval>;
 
   constructor(
@@ -266,6 +267,7 @@ class TradingClient {
       switch (msg.mt) {
         case 19: // WalletSnapshot
           this.accountId = msg.as?.[0]?.id;
+          this.lastSn = msg.sn; // Initialize sequence tracking
           this.onUpdate('wallet', msg);
           break;
         case 23: // OrdersSnapshot
@@ -284,6 +286,13 @@ class TradingClient {
           this.onUpdate('positionUpdate', msg.d);
           break;
         case 100: // Heartbeat
+          if (this.lastSn != null && msg.sn !== this.lastSn + 1) {
+            console.warn('Sequence gap, reconnecting...');
+            this.disconnect();
+            this.connect();
+            return;
+          }
+          this.lastSn = msg.sn;
           this.currentBlock = msg.h;
           break;
       }

@@ -205,7 +205,8 @@ interface MarketState {
 ```typescript
 interface Heartbeat {
   mt: 100;
-  h: number;  // Latest head block number
+  sn: number;  // Sequence number (strictly +1 from previous)
+  h: number;   // Latest head block number
 }
 ```
 
@@ -240,6 +241,8 @@ After authentication, you receive snapshots:
 2. **OrdersSnapshot** (mt: 23) - Open orders
 3. **PositionsSnapshot** (mt: 26) - Open positions
 
+The **WalletSnapshot** includes a sequence number (`sn` from `MessageHeader`) that serves as the starting point for sequence tracking. Store this value and use it to validate subsequent heartbeat sequence numbers (see [Heartbeat](#heartbeat-trading)).
+
 ### Placing Orders
 
 ```typescript
@@ -257,14 +260,50 @@ interface OrderRequest {
   fl: OrderFlags;      // Flags (PostOnly, FOK, IOC)
   tp?: number;         // Trigger price (stop/TP orders)
   tpc?: number;        // Trigger condition (1=GTE, 2=LTE)
-  tr?: number;         // Linked trigger request
+  tr?: number;         // Linked trigger request ID
   lp?: number;         // Linked position ID
   lv: number;          // Leverage (hundredths, e.g., 1000 = 10x)
   lb: number;          // Last execution block
 }
 ```
 
+**Delivery Semantics & Idempotency**:
+
+`rq` (Request ID) is an idempotency key scoped per account. The server guarantees **at-most-once** execution per `rq`.
+
+**Request ID generation**:
+
+`rq` must be strictly increasing. The server tracks the last processed ID as `lfr` on the Account object (in WalletSnapshot mt: 19 and AccountUpdate mt: 21).
+
+1. Seed local counter from `account.lfr` on connect
+2. For each order: `rq = max(localCounter, account.lfr) + 1`
+
+Submitting `rq <= lfr` fails with `sr: 32` (OrderDescIdTooLow).
+
+**Retries**:
+
+| Scenario | Action |
+|----------|--------|
+| No status received yet, `lb` not expired | Retry with **same** `rq` |
+| `sr: 32` (OrderDescIdTooLow) | Retry **once** with new `rq` (common with multiple clients/tabs) |
+| Head block ≥ `lb`, no status received, no reconnections since posting | Retry with **new** `rq` |
+
+**Client-side deduplication**:
+
+Multiple updates may arrive for a single `rq`:
+- First non-failure status (`st: 2–5, 8, 9`) is definitive — ignore everything after, including later failures
+- If only failures (`st: 7`) arrive, process the first one only
+- After retrying with a new `rq`, ignore late failures from the old `rq`
+
+**Trigger Orders**:
+
+- Trigger orders must set `lb: 0` (no expiry block). The server manages their lifecycle based on trigger conditions.
+- `tp` + `tpc`: The order will not be posted until the market last price crosses the trigger price according to the condition (GTE or LTE)
+- `tr`: Links this trigger order to another request. When the linked request results in a trade, the trigger activates; when it fails, the trigger is cancelled. If the linked request places an order, this trigger links to that order — activating when it fills, cancelling when it is cancelled.
+- `lp`: Links the trigger order to a position. The trigger is cancelled when the position is closed or inverted.
+
 **Order Types**:
+
 | Value | Name |
 |-------|------|
 | 1 | OpenLong |
@@ -276,6 +315,7 @@ interface OrderRequest {
 | 7 | Change |
 
 **Order Flags**:
+
 | Value | Name |
 |-------|------|
 | 0 | GoodTillCancel |
@@ -304,6 +344,7 @@ ws.send(JSON.stringify({
 - `leverage` within market limits - Check `MarketConfig.initial_margin` (e.g., 1000 = 10% = max 10x)
 - `marketId` is valid - Verify against `/api/v1/pub/context` markets
 - `price > 0` for limit orders, `price = 0` for market (IOC)
+- `lb` should not exceed `head_block_number + market.order_ttl_blocks`
 - WebSocket is connected - Check `ws.readyState === WebSocket.OPEN`
 
 **Example - Cancel Order**:
@@ -363,10 +404,35 @@ interface Account {
   id: number;       // Account ID
   fr: boolean;      // Is frozen
   fw: boolean;      // Allows forwarding
+  lfr: number;      // Last forwarded request ID (use to seed `rq` generation)
   b: string;        // Balance
   lb: string;       // Locked balance
   h?: AccountEvent[];  // Recent events
 }
+```
+
+### Heartbeat (Trading) {#heartbeat-trading}
+
+On the trading WebSocket, sequence tracking requires special initialization:
+
+1. Initialize `lastSn` from the `sn` field in the **WalletSnapshot** (mt: 19) received after authentication.
+2. Each subsequent heartbeat must have `sn === previousSn + 1`.
+3. On sequence gap (missed heartbeat), **force reconnect** — the gap means messages may have been lost.
+
+```typescript
+let lastSn: number | undefined;
+
+// On WalletSnapshot (mt: 19)
+lastSn = walletMessage.sn;
+
+// On Heartbeat (mt: 100)
+if (lastSn != null && heartbeat.sn !== lastSn + 1) {
+  // Sequence gap detected — reconnect to get fresh state
+  ws.close();
+  reconnect();
+  return;
+}
+lastSn = heartbeat.sn;
 ```
 
 ### Keep-Alive
