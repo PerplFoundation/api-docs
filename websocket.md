@@ -9,7 +9,7 @@ Perpl provides two WebSocket endpoints for real-time data.
 | `/ws/v1/market-data` | Public market data | None |
 | `/ws/v1/trading` | Trading & account data | Required |
 
-**URLs** (configurable via `PERPL_WS_URL`, default: `wss://perpl.xyz`):
+**URLs** (configurable via `PERPL_WS_URL`, default: `wss://app.perpl.xyz`):
 - Market Data: `${PERPL_WS_URL}/ws/v1/market-data`
 - Trading: `${PERPL_WS_URL}/ws/v1/trading`
 
@@ -56,6 +56,7 @@ interface MessageHeader {
 | 25 | FillsUpdate | Server → Client |
 | 26 | PositionsSnapshot | Server → Client |
 | 27 | PositionsUpdate | Server → Client |
+| 28 | AccountStatsUpdate | Server → Client |
 | 100 | Heartbeat | Server → Client |
 
 ---
@@ -65,7 +66,7 @@ interface MessageHeader {
 ### Connecting
 
 ```typescript
-const WS_URL = process.env.PERPL_WS_URL || 'wss://perpl.xyz';
+const WS_URL = process.env.PERPL_WS_URL || 'wss://app.perpl.xyz';
 const ws = new WebSocket(`${WS_URL}/ws/v1/market-data`);
 ```
 
@@ -217,7 +218,7 @@ interface Heartbeat {
 ### Connecting & Authenticating
 
 ```typescript
-const WS_URL = process.env.PERPL_WS_URL || 'wss://perpl.xyz';
+const WS_URL = process.env.PERPL_WS_URL || 'wss://app.perpl.xyz';
 const CHAIN_ID = Number(process.env.PERPL_CHAIN_ID) || 143;
 
 const ws = new WebSocket(`${WS_URL}/ws/v1/trading`);

@@ -1,0 +1,19 @@
+{
+  "type": "module",
+  "dependencies": {
+    "ethers": "^6.13.5",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "scripts": {
+    "rest": "tsx rest_requests.ts",
+    "websocket": "tsx stream_websocket.ts",
+    "authed-rest": "tsx authed_rest_requests.ts",
+    "authed-websocket": "tsx authed_websocket.ts"
+  }
+}

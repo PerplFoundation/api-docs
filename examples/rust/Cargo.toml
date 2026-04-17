@@ -1,0 +1,33 @@
+[package]
+name = "perpl-examples"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "rest_requests"
+path = "src/bin/rest_requests.rs"
+
+[[bin]]
+name = "authed_rest_requests"
+path = "src/bin/authed_rest_requests.rs"
+
+[[bin]]
+name = "stream_websocket"
+path = "src/bin/stream_websocket.rs"
+
+[[bin]]
+name = "authed_websocket"
+path = "src/bin/authed_websocket.rs"
+
+[dependencies]
+alloy = { version = "2", features = ["signer-local"] }
+anyhow = "1"
+futures-util = "0.3"
+hex = "0.4"
+http = "1"
+reqwest = { version = "0.12", features = ["json", "cookies"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+url = "2.5.8"
+uuid = { version = "1", features = ["v4"] }

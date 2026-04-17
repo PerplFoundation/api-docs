@@ -6,8 +6,8 @@ Complete examples for common API operations.
 
 ```typescript
 // Load from environment (or use defaults for mainnet)
-const API_URL = process.env.PERPL_API_URL || 'https://perpl.xyz/api';
-const WS_URL = process.env.PERPL_WS_URL || 'wss://perpl.xyz';  // Note: WebSocket doesn't use /api prefix
+const API_URL = process.env.PERPL_API_URL || 'https://app.perpl.xyz/api';
+const WS_URL = process.env.PERPL_WS_URL || 'wss://app.perpl.xyz';  // Note: WebSocket doesn't use /api prefix
 const CHAIN_ID = Number(process.env.PERPL_CHAIN_ID) || 143;
 
 // Market IDs for mainnet

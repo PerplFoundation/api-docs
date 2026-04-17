@@ -49,7 +49,7 @@ interface AuthPayloadResponse {
 
 **Example**:
 ```typescript
-const API_URL = process.env.PERPL_API_URL || 'https://perpl.xyz/api';
+const API_URL = process.env.PERPL_API_URL || 'https://app.perpl.xyz/api';
 const CHAIN_ID = Number(process.env.PERPL_CHAIN_ID) || 143;
 
 const response = await fetch(`${API_URL}/v1/auth/payload`, {
@@ -81,6 +81,9 @@ const signature = await signMessage({
 
 **With ethers.js**:
 ```typescript
+import { ethers } from "ethers";
+
+let wallet = new ethers.Wallet(privateKey);
 const signature = await wallet.signMessage(payload.message);
 ```
 
@@ -118,7 +121,7 @@ interface AuthConnectResponse {
 
 **Example**:
 ```typescript
-const API_URL = process.env.PERPL_API_URL || 'https://perpl.xyz/api';
+const API_URL = process.env.PERPL_API_URL || 'https://app.perpl.xyz/api';
 const CHAIN_ID = Number(process.env.PERPL_CHAIN_ID) || 143;
 const address = '0x1234567890abcdef1234567890abcdef12345678';
 
@@ -150,7 +153,7 @@ const auth = await authResponse.json();
 After authentication, use these headers for authenticated REST requests:
 
 ```typescript
-const API_URL = process.env.PERPL_API_URL || 'https://perpl.xyz/api';
+const API_URL = process.env.PERPL_API_URL || 'https://app.perpl.xyz/api';
 
 const headers = {
   'Content-Type': 'application/json',
@@ -164,12 +167,28 @@ const response = await fetch(`${API_URL}/v1/profile/ref-code`, {
 });
 ```
 
+For non-browser environments where cookies aren't automatically sent:
+
+```typescript
+const API_URL = process.env.PERPL_API_URL || 'https://app.perpl.xyz/api';
+
+const headers = {
+  'Content-Type': 'application/json',
+  'X-Auth-Nonce': auth.nonce,  // From auth/connect response
+  'Cookie': authResponse.headers.get('set-cookie'),
+};
+
+const response = await fetch(`${API_URL}/v1/profile/ref-code`, {
+  headers
+});
+```
+
 ## WebSocket Authentication
 
 For the trading WebSocket, send `AuthSignIn` after connecting:
 
 ```typescript
-const WS_URL = process.env.PERPL_WS_URL || 'wss://perpl.xyz';
+const WS_URL = process.env.PERPL_WS_URL || 'wss://app.perpl.xyz';
 const CHAIN_ID = Number(process.env.PERPL_CHAIN_ID) || 143;
 
 const ws = new WebSocket(`${WS_URL}/ws/v1/trading`);

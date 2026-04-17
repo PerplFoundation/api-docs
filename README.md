@@ -13,12 +13,14 @@ The Perpl API provides two communication channels:
 
 **Base URL**: Configured via environment (see [Configuration](#configuration))
 
+Code examples for JavaScript, Rust, Python and TypeScript can be found in examples/
+
 ## Quick Start
 
 ### 1. Get Market Data (No Auth)
 
 ```typescript
-const API_URL = process.env.PERPL_API_URL || 'https://perpl.xyz/api';
+const API_URL = process.env.PERPL_API_URL || 'https://app.perpl.xyz/api';
 
 // Fetch context (markets, tokens, chain config)
 const context = await fetch(`${API_URL}/v1/pub/context`)
@@ -31,7 +33,7 @@ console.log(context.chain);   // Chain configuration
 ### 2. Connect to Market Data WebSocket
 
 ```typescript
-const WS_URL = process.env.PERPL_WS_URL || 'wss://perpl.xyz';
+const WS_URL = process.env.PERPL_WS_URL || 'wss://app.perpl.xyz';
 
 const ws = new WebSocket(`${WS_URL}/ws/v1/market-data`);
 
@@ -54,39 +56,72 @@ ws.onmessage = (event) => {
 > **Note**: Authentication requires a **whitelisted wallet**. Non-whitelisted wallets will receive HTTP 418 (Access code required). See [Wallet Requirements](#wallet-requirements) below.
 
 ```typescript
-const API_URL = process.env.PERPL_API_URL || 'https://perpl.xyz/api';
+import { ethers } from "ethers";
+
+const API_URL = process.env.PERPL_API_URL || 'https://app.perpl.xyz/api';
 const CHAIN_ID = Number(process.env.PERPL_CHAIN_ID) || 143;
-const address = '0xYourWalletAddress';
+
+const address = '0xYourWalletAddress'
+const privateKey = '0xYourWalletPrivateKey'
 
 // Step 1: Get signing payload
-const payload = await fetch(`${API_URL}/v1/auth/payload`, {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    chain_id: CHAIN_ID,
-    address
-  })
-}).then(r => r.json());
+const response = await fetch(`${API_URL}/v1/auth/payload`, {
+   method: 'POST',
+   headers: { 'Content-Type': 'application/json' },
+   body: JSON.stringify({
+      chain_id: CHAIN_ID,
+      address,
+   })
+});
+
+const payload = await response.json();
+// payload.message contains SIWE message to sign
 
 // Step 2: Sign the SIWE message with your wallet
-const signature = await wallet.signMessage({ message: payload.message });
+let wallet = new ethers.Wallet(privateKey);
+const signature = await wallet.signMessage(payload.message);
 
 // Step 3: Connect with signature (chain_id and address required!)
-const auth = await fetch(`${API_URL}/v1/auth/connect`, {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    chain_id: CHAIN_ID,
-    address,
-    ...payload,
-    signature
-  })
-}).then(r => r.json());
+const authResponse = await fetch(`${API_URL}/v1/auth/connect`, {
+   method: 'POST',
+   headers: { 'Content-Type': 'application/json' },
+   body: JSON.stringify({
+      chain_id: CHAIN_ID,
+      address,
+      message: payload.message,
+      nonce: payload.nonce,
+      issued_at: payload.issued_at,
+      mac: payload.mac,
+      signature: signature
+   })
+});
 
-// auth.nonce is used for authenticated requests
+if (authResponse.status === 418) {
+   console.log('Need access code');
+}
+
+// authentication uses both the auth-token cookie and a nonce value
+const auth = await authResponse.json();
+const cookie = authResponse.headers.get('set-cookie');
+
+// Step 4: Make an authenticated request sending both the nonce and auth-token cookie
+const contact_info_response = await fetch(`${API_URL}/v1/profile/contact-info`, {
+   method: 'GET',
+   headers: {
+      'Content-Type': 'application/json',
+      'X-Auth-Nonce': auth.nonce,
+      'Cookie': cookie,
+   },
+});
+
+const contact_info = await contact_info_response.json();
+console.log(contact_info);
+
 ```
 
-> **Important**: Successful API authentication does NOT mean you have an exchange account. See [API Auth vs Smart Contract Account](#api-auth-vs-smart-contract-account) below.
+> **Important**: Successful API authentication does NOT mean you have an exchange account.
+> See [API Auth vs Smart Contract Account](#api-auth-vs-smart-contract-account) below.
+> Some calls will return 404 if a Smart Contract Account has not been created.
 
 ## API Reference
 
@@ -108,8 +143,8 @@ cp .env.example .env
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PERPL_API_URL` | `https://perpl.xyz/api` | REST API base URL |
-| `PERPL_WS_URL` | `wss://perpl.xyz` | WebSocket base URL |
+| `PERPL_API_URL` | `https://app.perpl.xyz/api` | REST API base URL |
+| `PERPL_WS_URL` | `wss://app.perpl.xyz` | WebSocket base URL |
 | `PERPL_CHAIN_ID` | `143` | Chain ID |
 | `PERPL_RPC_URL` | `https://rpc.monad.xyz` | RPC URL for on-chain ops |
 | `PERPL_EXCHANGE_ADDRESS` | `0x34B6552d...` | Exchange contract |
@@ -121,8 +156,8 @@ Perpl runs on both **Mainnet** (default) and **Testnet**.
 
 | | Mainnet (default) | Testnet |
 |---|---|---|
-| REST API | `https://perpl.xyz/api` | `https://testnet.perpl.xyz/api` |
-| WebSocket | `wss://perpl.xyz` | `wss://testnet.perpl.xyz` |
+| REST API | `https://app.perpl.xyz/api` | `https://testnet.perpl.xyz/api` |
+| WebSocket | `wss://app.perpl.xyz` | `wss://testnet.perpl.xyz` |
 | Chain ID | `143` | `10143` |
 | RPC | `https://rpc.monad.xyz` | `https://testnet-rpc.monad.xyz` |
 | Exchange | `0x34B6552d57a35a1D042CcAe1951BD1C370112a6F` | `0x9c216d1ab3e0407b3d6f1d5e9effe6d01c326ab7` |
@@ -139,6 +174,8 @@ Market IDs differ between networks:
 |-----------|--------|
 | 1 | BTC |
 | 10 | MON |
+| 20 | ETH |
+| 30 | SOL |
 
 **Testnet**:
 | Market ID | Symbol |
@@ -287,6 +324,8 @@ To get your wallet whitelisted on Perpl:
 3. **Both are required for full functionality**
    - API auth → Access trading history, real-time data via authenticated endpoints
    - Exchange account → Actually place orders and hold positions
+
+On the front end, the "Deposit to Enable trading" button takes care of this flow.
 
 ### Checking Account Status
 

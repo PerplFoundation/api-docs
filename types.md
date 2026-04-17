@@ -135,7 +135,7 @@ interface GasPrice {
   at: BlockTimestamp;
   h: number;      // Head block
   max: Amount;    // Maximum priority
-  p95: Amount;    // 95th percentile
+  p95: Amount;    // 95th percentile (top 5% of the order book)
   p50: Amount;    // 50th percentile
   min: Amount;    // Minimum priority
   base: Amount;   // Base fee only
