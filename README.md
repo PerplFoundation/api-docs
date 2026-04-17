@@ -309,6 +309,8 @@ To get your wallet whitelisted on Perpl:
 | **API Authentication** | Wallet is whitelisted and can call authenticated API endpoints | Reading order history, position history, trading WebSocket |
 | **Exchange Account** | On-chain account exists on Exchange contract with collateral | Placing orders, holding positions, trading |
 
+**Currently, the smart contract isn't published so use the front end to do the initial smart contract account creation**
+
 ### Key Points
 
 1. **API auth does NOT create an exchange account**
