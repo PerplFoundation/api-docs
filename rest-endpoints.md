@@ -1,6 +1,6 @@
 # REST API Endpoints
 
-Base URL: `${PERPL_API_URL}` (default: `https://perpl.xyz/api`)
+Base URL: `${PERPL_API_URL}` (default: `https://app.perpl.xyz/api`)
 
 ## Public Endpoints
 
@@ -23,11 +23,11 @@ interface Context {
 
 **Example**:
 ```bash
-# Using default testnet URL
-curl https://perpl.xyz/api/v1/pub/context
+# Using default live URL
+curl https://app.perpl.xyz/api/v1/pub/context
 
 # Or using environment variable
-curl ${PERPL_API_URL:-https://perpl.xyz/api}/v1/pub/context
+curl ${PERPL_API_URL:-https://app.perpl.xyz/api}/v1/pub/context
 ```
 
 ---
@@ -84,7 +84,7 @@ interface Candle {
 **Example**:
 ```bash
 # Get 1-hour BTC candles for last 24 hours
-API_URL=${PERPL_API_URL:-https://perpl.xyz/api}
+API_URL=${PERPL_API_URL:-https://app.perpl.xyz/api}
 FROM=$(($(date +%s) * 1000 - 86400000))
 TO=$(($(date +%s) * 1000))
 curl "${API_URL}/v1/market-data/1/candles/3600/${FROM}-${TO}"
@@ -359,7 +359,7 @@ See [Types](./types.md#position) for Position structure.
 ## Pagination Example
 
 ```typescript
-const API_URL = process.env.PERPL_API_URL || 'https://perpl.xyz/api';
+const API_URL = process.env.PERPL_API_URL || 'https://app.perpl.xyz/api';
 
 async function fetchAllFills(authNonce: string) {
   const fills: Fill[] = [];
