@@ -160,7 +160,7 @@ Perpl runs on both **Mainnet** (default) and **Testnet**.
 | WebSocket | `wss://app.perpl.xyz` | `wss://testnet.perpl.xyz` |
 | Chain ID | `143` | `10143` |
 | RPC | `https://rpc.monad.xyz` | `https://testnet-rpc.monad.xyz` |
-| Exchange | `0x34B6552d57a35a1D042CcAe1951BD1C370112a6F` | `0x9c216d1ab3e0407b3d6f1d5e9effe6d01c326ab7` |
+| Exchange | `0x34B6552d57a35a1D042CcAe1951BD1C370112a6F` | `0x1964c32f0be608e7d29302aff5e61268e72080cc` |
 | Collateral | `0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a` (AUSD) | `0xdf5b718d8fcc173335185a2a1513ee8151e3c027` (USD) |
 
 To use testnet, set the environment variables to testnet values.
@@ -309,8 +309,6 @@ To get your wallet whitelisted on Perpl:
 | **API Authentication** | Wallet is whitelisted and can call authenticated API endpoints | Reading order history, position history, trading WebSocket |
 | **Exchange Account** | On-chain account exists on Exchange contract with collateral | Placing orders, holding positions, trading |
 
-**Currently, the smart contract isn't published so use the front end to do the initial smart contract account creation**
-
 ### Key Points
 
 1. **API auth does NOT create an exchange account**
@@ -329,33 +327,53 @@ To get your wallet whitelisted on Perpl:
 
 On the front end, the "Deposit to Enable trading" button takes care of this flow.
 
-### Checking Account Status
+### Fetch smart contract information
+
+Fetch the smart contract information from the public API over http:
 
 ```typescript
-// Check if wallet has an exchange account
-const Exchange = await getContract('Exchange');
-const accountInfo = await Exchange.read.getAccountByAddr([walletAddress]);
-
-if (accountInfo.accountId === 0n) {
-  console.log('No exchange account exists - need to create one');
-} else {
-  console.log(`Account ID: ${accountInfo.accountId}`);
-  console.log(`Balance: ${accountInfo.balanceCNS / 1e6} USD`);
-}
+    const accountCreationInfo = await getAccountCreationInfo(API_URL);
+    console.log(accountCreationInfo);
+    // Example output:
+    // { 'account_open_min_deposit_display': '10.0 AUSD',
+    //   'collateral_token_address': '0x00000000efe302beaa2b3e6e1b18d08d69a9012a',
+    //   'collateral_token_symbol': 'AUSD',
+    //   'min_account_open_amount': 100000000,
+    //   'smart_contract_address': '0xSMART_CONTRACT_ADDRESS'
+    // }
 ```
+
+Example code is given in examples/*/fetch_smart_contract_info for JavaScript, Python, Rust and TypeScript.
+
+### Checking Account Status
+
+To make the API calls to the Smart Contract use Foundry: https://www.getfoundry.sh and fill in the environment variables with the information from the public API.
+
+```bash
+export SMART_CONTRACT_ADDRESS=0xSmartContractAddress
+export WALLET_ADDRESS=0xYourWalletAddress
+cast call --from $WALLET_ADDRESS $SMART_CONTRACT_ADDRESS "getAccountByAddr(address)(uint256)" $WALLET_ADDRESS --rpc-url $RPC_URL
+```
+
+This call returns the account id for an address if an account exists otherwise returns an execution reverted error.
 
 ### Creating an Exchange Account
 
-```typescript
-// 1. Approve collateral token
-const USDC = await getContract('USDC');
-await USDC.write.approve([EXCHANGE_ADDRESS, depositAmount]);
+Again, fill in the environment variables using the API output above and use cast to create the Smart Contract Account:
 
-// 2. Create account with initial deposit
-const Exchange = await getContract('Exchange');
-await Exchange.write.createAccount([depositAmount]); // depositAmount in CNS (6 decimals)
+```bash
+export SMART_CONTRACT_ADDRESS=0xSmartContractAddress
+export TOKEN_CONTRACT_ADDRESS=0xCollateralTokenContractAddress
+export WALLET_ADDRESS=0xYourWalletAddress
+export WALLET_KEY=0xYourWalletPrivateKey;
+# Check API for current min account open amount
+export MIN_ACCOUNT_OPEN_AMOUNT=100000000
 
-// Account now exists and can trade
+# Approve deposit to DEX contract (ERC-20)
+cast send --from $WALLET_ADDRESS $TOKEN_CONTRACT_ADDRESS "approve(address,uint256)(bool)" $SMART_CONTRACT_ADDRESS $MIN_ACCOUNT_OPEN_AMOUNT --private-key $WALLET_KEY --rpc-url $RPC_URL
+
+# Create DEX account with initial deposit
+cast send --from $WALLET_ADDRESS $SMART_CONTRACT_ADDRESS "createAccount(uint256)(uint256)" $MIN_ACCOUNT_OPEN_AMOUNT --private-key $WALLET_KEY --rpc-url $RPC_URL
 ```
 
 ### Common Error Scenarios

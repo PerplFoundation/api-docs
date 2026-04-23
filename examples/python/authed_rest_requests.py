@@ -17,7 +17,7 @@ WALLET_ADDRESS = '0xYourWalletAddress'
 WALLET_KEY = '0xYourWalletPrivateKey'
 
 
-def perpl_auth(api_url, chain_id, wallet_address, wallet_key):
+def perpl_auth(api_url, chain_id, wallet_address, wallet_key, ref_code=""):
     # Step 1: Get signing payload
     auth_payload = {
         "chain_id": chain_id,
@@ -40,6 +40,7 @@ def perpl_auth(api_url, chain_id, wallet_address, wallet_key):
         "message": message,
         "nonce": signing_payload["nonce"],
         "mac": signing_payload["mac"],
+        "ref_code": ref_code,
         "signature": "0x" + signed_message.signature.hex(),
         "issued_at": signing_payload["issued_at"],
     }

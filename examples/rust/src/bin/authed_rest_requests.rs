@@ -31,9 +31,10 @@ async fn main() -> Result<()> {
     let chain_id: u64 = std::env::var("PERPL_CHAIN_ID")
         .unwrap_or_else(|_| DEFAULT_CHAIN_ID.to_string())
         .parse()?;
+    let ref_code: Option<String> = std::env::var("PERPL_REF_CODE").ok();
 
     let (nonce, auth_token_cookie) =
-        perpl_auth(&api_url, chain_id, WALLET_ADDRESS, WALLET_KEY).await?;
+        perpl_auth(&api_url, chain_id, WALLET_ADDRESS, WALLET_KEY, ref_code.as_deref()).await?;
     make_authed_request(&api_url, &nonce, &auth_token_cookie).await?;
     Ok(())
 }
