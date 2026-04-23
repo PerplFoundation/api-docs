@@ -28,6 +28,7 @@ interface ConnectRequest {
     nonce: string;
     mac: string;
     signature: string;
+    ref_code: string;
     issued_at: string;
 }
 
@@ -41,7 +42,7 @@ export interface AuthResult {
 }
 
 
-export async function perplAuth(apiUrl: string, chainId: number, walletAddress: string, walletKey: string): Promise<AuthResult> {
+export async function perplAuth(apiUrl: string, chainId: number, walletAddress: string, walletKey: string, ref_code: string=""): Promise<AuthResult> {
     // Step 1: Get signing payload
     const authPayload = { chain_id: chainId, address: walletAddress };
     const payloadRes = await fetch(`${apiUrl}${AUTH_PAYLOAD_URL}`, {
@@ -63,6 +64,7 @@ export async function perplAuth(apiUrl: string, chainId: number, walletAddress: 
         nonce: signingPayload.nonce,
         mac: signingPayload.mac,
         signature,
+        ref_code,
         issued_at: signingPayload.issued_at,
     };
 

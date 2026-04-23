@@ -15,6 +15,7 @@ pub async fn perpl_auth(
     chain_id: u64,
     wallet_address: &str,
     wallet_key: &str,
+    ref_code: Option<&str>,
 ) -> Result<(String, String)> {
     let client = reqwest::Client::new();
 
@@ -46,6 +47,7 @@ pub async fn perpl_auth(
         "message": message,
         "nonce": signing_payload["nonce"],
         "mac": signing_payload["mac"],
+        "ref_code": ref_code.unwrap_or(""),
         "signature": signature_hex,
         "issued_at": signing_payload["issued_at"],
     });

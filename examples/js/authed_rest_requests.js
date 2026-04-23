@@ -14,7 +14,7 @@ const WALLET_ADDRESS = '0xYourWalletAddress';
 const WALLET_KEY = '0xYourWalletPrivateKey';
 
 
-export async function perplAuth(apiUrl, chainId, walletAddress, walletKey) {
+export async function perplAuth(apiUrl, chainId, walletAddress, walletKey, ref_code='') {
     // Step 1: Get signing payload
     const authPayload = { chain_id: chainId, address: walletAddress };
     const payloadRes = await fetch(`${apiUrl}${AUTH_PAYLOAD_URL}`, {
@@ -35,6 +35,7 @@ export async function perplAuth(apiUrl, chainId, walletAddress, walletKey) {
         message: signingPayload.message,
         nonce: signingPayload.nonce,
         mac: signingPayload.mac,
+        ref_code,
         signature,
         issued_at: signingPayload.issued_at,
     };

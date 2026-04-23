@@ -15,6 +15,8 @@ const CHAIN_ID = Number(process.env.PERPL_CHAIN_ID) || 143;
 const MARKETS = {
   BTC: 1,
   MON: 10,
+  ETH: 20,
+  SOL: 30,
 } as const;
 ```
 
@@ -27,7 +29,7 @@ const MARKETS = {
 ```typescript
 import { signMessage } from 'viem/accounts';
 
-async function authenticate(privateKey: `0x${string}`, address: string) {
+async function authenticate(privateKey: `0x${string}`, address: string, ref_code: string='') {
   // Step 1: Get payload
   const payloadRes = await fetch(`${API_URL}/v1/auth/payload`, {
     method: 'POST',
@@ -51,6 +53,7 @@ async function authenticate(privateKey: `0x${string}`, address: string) {
       chain_id: CHAIN_ID,
       address,
       ...payload,
+      ref_code,
       signature
     })
   });

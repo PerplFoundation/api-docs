@@ -5,7 +5,7 @@ import WebSocket from 'ws';
 const API_URL = process.env.PERPL_WS_URL || 'wss://app.perpl.xyz';
 const WS_URL = '/ws/v1/market-data';
 
-const BTC_MAINNET = 1;                            // 16 for testnet
+const BTC_MAINNET = 1;   // 16 for testnet
 const PERPL_CHAIN_ID = Number(process.env.PERPL_CHAIN_ID) || 143;   // 10143 for testnet
 const HOUR = 3600;
 

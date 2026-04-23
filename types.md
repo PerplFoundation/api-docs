@@ -123,6 +123,7 @@ interface ProtocolInstance {
   id: InstanceID;
   address: string;                    // Exchange contract
   collateral_token_id: TokenID;
+  min_account_open_amount: Amount;
   max_account_equity?: Amount;
   max_account_trigger_orders: number;
 }
@@ -177,7 +178,6 @@ interface MarketConfig {
   is_open: boolean;
   price_decimals: Decimals;
   size_decimals: Decimals;
-  min_account_open_amount: Amount;
   min_posting_amount: Amount;
   min_settle_amount: Amount;
   initial_margin: Fraction;       // e.g., 1000 = 10% (10x max)
