@@ -230,6 +230,8 @@ interface FundingEvent {
 interface Order {
   at: BlockTxLogTimestamp;  // Update timestamp
   c: BlockTxTimestamp;      // Creation timestamp
+  // Request ID is an user set ID for this Order, when using the API it is equivalent to a client_order_id with deduplication
+  // and must be monotonically increasing, for smart contract users it can be freely set to any value to identify the order
   rq: RequestID;
   mkt: MarketID;
   acc: AccountID;
