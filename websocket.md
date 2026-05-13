@@ -249,7 +249,7 @@ The **WalletSnapshot** includes a sequence number (`sn` from `MessageHeader`) th
 ```typescript
 interface OrderRequest {
   mt: 22;
-  rq: number;          // Request ID (strictly increasing)
+  rq: number;          // Request ID (strictly increasing, API equivalent to client_order_id - enforced by smart contract only for API orders)
   mkt: number;         // Market ID
   acc: number;         // Account ID
   oid?: number;        // Order ID (for modify/cancel)
@@ -257,7 +257,7 @@ interface OrderRequest {
   p?: number;          // Limit price (0 for market)
   s: number;           // Size (scaled)
   a?: string;          // Amount (for collateral increase)
-  tif?: number;        // Time-in-force block
+  tif?: number;        // Time-in-force block - The last block number on the Monad chain where this order is valid
   fl: OrderFlags;      // Flags (PostOnly, FOK, IOC)
   tp?: number;         // Trigger price (stop/TP orders)
   tpc?: number;        // Trigger condition (1=GTE, 2=LTE)
@@ -272,16 +272,36 @@ interface OrderRequest {
 
 `rq` (Request ID) is an idempotency key scoped per account. The server guarantees **at-most-once** execution per `rq`.
 
+The Request ID is equivalent to a client order id on non-dex exchanges (applicable only for orders sent via API, not for direct on-chain transactions).
+
+Multiple requests via the API with the same Request ID only results in a single execution.
+
+For smart contract / SDK users placing non API orders the value maybe set to anything to identify the order and is non-unique.
+
 **Request ID generation**:
 
 `rq` must be strictly increasing. The server tracks the last processed ID as `lfr` on the Account object (in WalletSnapshot mt: 19 and AccountUpdate mt: 21).
 
-1. Seed local counter from `account.lfr` on connect
+1. Seed local counter from `account.lfr` on connect to trading websocket
 2. For each order: `rq = max(localCounter, account.lfr) + 1`
 
 Submitting `rq <= lfr` fails with `sr: 32` (OrderDescIdTooLow).
 
 **Retries**:
+
+Client side is responsible for retries and should follow the following rules:
+1. Retry with original RequestID:
+   a. Before receiving any status update for the original request
+   b. Before `LastExecBlock` expiration
+2. Retry with new RequestID only when:
+   a. Failure status received for the original request
+   b. Current known block (eg. `Heartbeat.SeqNo`) is greater or equal to `LastExecBlock` of the original
+   request and no status updates were received - only if all block updates / heartbeats
+   after order posting were observed (i.e. there were no reconnections)
+For each RequestID, multiple `Order` messages with status updates can be received.
+Client side is responsible for deduplication of these messages, processing only:
+  a. The first failure message if all received messages are failures (`OrderStatusFailed`)
+  b. The first non-failure message received (OrderStatusOpen, OrderStatusPartiallyFilled, OrderStatusFilled, OrderStatusCanceled, OrderStatusUntriggered, OrderStatusTriggered)
 
 | Scenario | Action |
 |----------|--------|
