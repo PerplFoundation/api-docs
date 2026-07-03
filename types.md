@@ -658,7 +658,7 @@ type ScopeMask = number;    // uint32 bitmask
 
 const ScopeRead: ScopeMask = 1 << 0;         // read account/order/position data
 const ScopeTrade: ScopeMask = 1 << 1;        // place/cancel/modify orders (implies read)
-const ScopeAll = ScopeRead | ScopeTrade;     // full scope (interactive JWT sessions)
+const ScopeAll = ScopeRead | ScopeTrade;     // full scope
 ```
 
 ### ApiKeyPayloadRequest

@@ -34,7 +34,6 @@ interface MessageHeader {
 | 1 | Ping | Client → Server |
 | 2 | Pong | Server → Client |
 | 3 | StatusResponse | Server → Client |
-| 4 | AuthSignIn | Client → Server |
 | 5 | SubscriptionRequest | Client → Server |
 | 6 | SubscriptionResponse | Server → Client |
 | 7 | GasPriceUpdate | Server → Client |
@@ -536,16 +535,16 @@ Reconnect and re-send a fresh signed `ApiKeySignIn` frame
   (new `timestamp` + `nonce`, re-signed) as the first message
 
 ```typescript
-ws.onclose = (event) => {
+function handleClose(event) {
   if (event.code === 3401) {
-    // Reconnect and re-send a fresh signed ApiKeySignIn frame.
-    await refreshAuth();
+    // Auth failed — just reconnect; the onopen handler re-sends a freshly
+    // signed ApiKeySignIn frame (new timestamp + nonce) as the first message.
     reconnect();
   } else {
-    // Normal reconnection with backoff
-    setTimeout(reconnect, getBackoffDelay());
+    // Normal close — reconnect with backoff (applied by reconnect()).
+    reconnect();
   }
-};
+}
 ```
 
 ### Reconnection Strategy
@@ -553,6 +552,34 @@ ws.onclose = (event) => {
 ```typescript
 const RETRY_DELAYS = [1000, 2000, 4000, 8000, 16000, 32000, 60000];
 let retryCount = 0;
+let ws: WebSocket;
+
+// Open the socket and wire up the handlers. Called again by reconnect().
+function connect() {
+  ws = new WebSocket(`${WS_URL}/ws/v1/trading`);
+
+  ws.onopen = async () => {
+    // Authenticate immediately: the first frame is a signed ApiKeySignIn (mt: 29).
+    const timestamp = Date.now().toString();
+    const nonce = randomBytes(16).toString('base64url');
+    const canonical = [CHAIN_ID, 'trading-ws-signin', timestamp, nonce].join('\n');
+    const sig = await ed.signAsync(Buffer.from(canonical), privateKey);
+
+    ws.send(JSON.stringify({
+      mt: 29,             // MsgTypeApiKeySignIn
+      chain_id: CHAIN_ID,
+      api_key: API_KEY,   // X-API-Key token from enrollment
+      timestamp,
+      nonce,
+      signature: Buffer.from(sig).toString('base64url'),
+    }));
+
+    onConnectSuccess();
+  };
+
+  ws.onmessage = (event) => { /* handle snapshots/updates */ };
+  ws.onclose = handleClose;  // the onclose handler shown under "Error Handling"
+}
 
 function reconnect() {
   const delay = RETRY_DELAYS[Math.min(retryCount, RETRY_DELAYS.length - 1)];
@@ -565,6 +592,8 @@ function reconnect() {
 function onConnectSuccess() {
   retryCount = 0;
 }
+
+connect();
 ```
 
 ---

@@ -19,6 +19,9 @@ import { fileURLToPath } from 'url';
 
 const API_URL = process.env.PERPL_API_URL || 'https://app.perpl.xyz/api';
 const CHAIN_ID = Number(process.env.PERPL_CHAIN_ID) || 143;
+// The Origin the key is enrolled from — must be whitelisted by Perpl. From a
+// browser the Origin header is set automatically; from Node set it explicitly.
+const ORIGIN = process.env.PERPL_ORIGIN || 'https://your-app.example';
 
 const API_KEY_PAYLOAD_URL = '/v1/api-key/payload';
 const API_KEY_ENROLL_URL = '/v1/api-key/enroll';
@@ -34,7 +37,7 @@ const WALLET_ADDRESS = process.env.WALLET_ADDRESS || new ethers.Wallet(WALLET_KE
 // Enroll a fresh Ed25519 API key, authorized by the wallet's EIP-712 signature.
 // Returns { token, privateKey } where token is the opaque X-API-Key value and
 // privateKey is the 32-byte Ed25519 secret used to sign every subsequent request.
-async function enrollApiKey(apiUrl, chainId, walletAddress, walletKey) {
+async function enrollApiKey(apiUrl, chainId, origin, walletAddress, walletKey) {
     // Step 1: Generate the Ed25519 key pair (the private key never leaves the client).
     const privateKey = ed.utils.randomPrivateKey();
     const publicKey = await ed.getPublicKeyAsync(privateKey);
@@ -43,7 +46,7 @@ async function enrollApiKey(apiUrl, chainId, walletAddress, walletKey) {
     // Step 2: Request the EIP-712 enrollment payload to sign.
     const payloadRes = await fetch(`${apiUrl}${API_KEY_PAYLOAD_URL}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Origin': origin },
         body: JSON.stringify({
             chain_id: chainId,
             address: walletAddress,
@@ -68,7 +71,7 @@ async function enrollApiKey(apiUrl, chainId, walletAddress, walletKey) {
     // Step 5: Submit both signatures and receive the opaque X-API-Key token.
     const enrollRes = await fetch(`${apiUrl}${API_KEY_ENROLL_URL}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Origin': origin },
         body: JSON.stringify({
             chain_id: chainId,
             address: walletAddress,
@@ -85,7 +88,7 @@ async function enrollApiKey(apiUrl, chainId, walletAddress, walletKey) {
 
 
 async function main() {
-    const { token, privateKey } = await enrollApiKey(API_URL, CHAIN_ID, WALLET_ADDRESS, WALLET_KEY);
+    const { token, privateKey } = await enrollApiKey(API_URL, CHAIN_ID, ORIGIN, WALLET_ADDRESS, WALLET_KEY);
     const secretHex = Buffer.from(privateKey).toString('hex');
     console.log('Enrolled a new API key. Export these to use it with the other examples:');
     console.log('');
