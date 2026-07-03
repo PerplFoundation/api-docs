@@ -1,31 +1,38 @@
-// Authenticating with the API and streaming from the trades API
-import { randomUUID } from 'crypto';
+// Authenticating with an API key over the trading WebSocket.
+//
+// After the socket opens, the first frame must be a signed ApiKeySignIn (mt: 29).
+// See authed_rest_requests.js for how the API key is loaded from the environment.
+import * as ed from '@noble/ed25519';
+import { randomBytes } from 'crypto';
 import { fileURLToPath } from 'url';
 import WebSocket from 'ws';
 
-import { perplAuth } from './authed_rest_requests.js';
+import { loadApiKey } from './authed_rest_requests.js';
 
 
-const API_URL = process.env.PERPL_API_URL || 'https://app.perpl.xyz/api';
-const PERPL_CHAIN_ID = Number(process.env.PERPL_CHAIN_ID) || 143;
+const CHAIN_ID = Number(process.env.PERPL_CHAIN_ID) || 143;
 
 const PERPL_WS_URL = process.env.PERPL_WS_URL || 'wss://app.perpl.xyz';
 const TRADING_API = '/ws/v1/trading';
 
-const AUTH_SIGN_IN = 4;
+// MsgTypeApiKeySignIn: the API-key WebSocket sign-in frame type.
+const API_KEY_SIGN_IN = 29;
 
 
-const WALLET_ADDRESS = '0xYourWalletAddress';
-const WALLET_KEY = '0xYourWalletPrivateKey';
+async function signIn(ws, chainId, token, privateKey) {
+    const timestamp = Date.now().toString();
+    const nonce = randomBytes(16).toString('base64url');
 
+    const canonical = [chainId, 'trading-ws-signin', timestamp, nonce].join('\n');
+    const signature = Buffer.from(await ed.signAsync(Buffer.from(canonical), privateKey)).toString('base64url');
 
-function startStream(ws, nonce) {
-    const ses = randomUUID();
     const message = {
-        mt: AUTH_SIGN_IN,
-        chain_id: PERPL_CHAIN_ID,
+        mt: API_KEY_SIGN_IN,
+        chain_id: chainId,
+        api_key: token,
+        timestamp,
         nonce,
-        ses,
+        signature,
     };
     ws.send(JSON.stringify(message));
 
@@ -34,17 +41,12 @@ function startStream(ws, nonce) {
     });
 }
 
-function authedWebsocket(wsUrl, nonce, authTokenCookie) {
+function authedWebsocket(wsUrl, chainId, token, privateKey) {
     const url = wsUrl + TRADING_API;
-    const ws = new WebSocket(url, {
-        headers: {
-            'X-Auth-Nonce': nonce,
-            'Cookie': `auth-token=${authTokenCookie}`,
-        },
-    });
+    const ws = new WebSocket(url);
 
     ws.on('open', () => {
-        startStream(ws, nonce);
+        signIn(ws, chainId, token, privateKey);
     });
 
     ws.on('error', (err) => {
@@ -53,8 +55,8 @@ function authedWebsocket(wsUrl, nonce, authTokenCookie) {
 }
 
 async function main() {
-    const { nonce, authTokenCookie } = await perplAuth(API_URL, PERPL_CHAIN_ID, WALLET_ADDRESS, WALLET_KEY);
-    authedWebsocket(PERPL_WS_URL, nonce, authTokenCookie);
+    const { token, privateKey } = loadApiKey();
+    authedWebsocket(PERPL_WS_URL, CHAIN_ID, token, privateKey);
 }
 
 

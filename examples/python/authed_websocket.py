@@ -1,55 +1,69 @@
-# Authenticating with the API and streaming from the trades API
+# Authenticating the trading WebSocket with an API key you already have.
+#
+# On the trading socket, API-key auth is a signed ApiKeySignIn frame (mt: 29)
+# sent as the first message after the socket opens. Key handling and the signing
+# helpers are shared with the REST example.
+#
+# Create a key via the web UI (connect your wallet):
+#   Mainnet: https://app.perpl.xyz/apikeys
+#   Testnet: https://testnet.perpl.xyz/apikeys
+# Then export PERPL_API_KEY and PERPL_API_KEY_SECRET (see authed_rest_requests.py).
 import asyncio
+import base64
 import json
 import os
-import uuid
+import secrets
+import time
+
 import websockets
 
-from authed_rest_requests import perpl_auth
+from authed_rest_requests import (
+    API_URL,
+    PERPL_CHAIN_ID,
+    load_api_key,
+)
 
-
-API_URL = os.environ.get("PERPL_API_URL", "https://app.perpl.xyz/api")
-AUTH_PAYLOAD_URL = "/v1/auth/payload"
-CONNECT_PAYLOAD_URL = "/v1/auth/connect"
-PERPL_CHAIN_ID = int(os.environ.get("PERPL_CHAIN_ID", 143))
 
 PERPL_WS_URL = os.environ.get("PERPL_WS_URL", "wss://app.perpl.xyz")
 TRADING_API = "/ws/v1/trading"
-AUTH_SIGN_IN = 4
+API_KEY_SIGN_IN = 29  # MsgTypeApiKeySignIn
 
 
-WALLET_ADDRESS = '0xYourWalletAddress'
-WALLET_KEY = '0xYourWalletPrivateKey'
+def _b64url(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
 
 
-async def start_stream(ws, nonce):
-    ses = str(uuid.uuid4())
-    message = {
-        "mt": AUTH_SIGN_IN,
-        "chain_id": PERPL_CHAIN_ID,
+async def start_stream(ws, priv, token, chain_id):
+    # First frame: signed ApiKeySignIn. The signature covers the WS canonical
+    # string: chain_id \n "trading-ws-signin" \n timestamp_ms \n nonce.
+    timestamp = str(int(time.time() * 1000))
+    nonce = _b64url(secrets.token_bytes(16))
+    canonical = "\n".join([str(chain_id), "trading-ws-signin", timestamp, nonce])
+    sig = _b64url(priv.sign(canonical.encode()))
+
+    sign_in = {
+        "mt": API_KEY_SIGN_IN,
+        "chain_id": chain_id,
+        "api_key": token,
+        "timestamp": timestamp,
         "nonce": nonce,
-        "ses": ses,
+        "signature": sig,
     }
-    message_json = json.dumps(message)
-    await ws.send(message_json)
+    await ws.send(json.dumps(sign_in))
 
     async for message in ws:
         print(f"Received: {message}")
 
 
-async def authed_websocket(ws_url, nonce, auth_token_cookie):
-    additional_headers = {
-        "X-Auth-Nonce": nonce,
-        "Cookie": f"auth-token={auth_token_cookie}"
-    }
+async def authed_websocket(ws_url, priv, token, chain_id):
     url = ws_url + TRADING_API
-    async with websockets.connect(url, additional_headers=additional_headers) as ws:
-        await start_stream(ws, nonce)
+    async with websockets.connect(url) as ws:
+        await start_stream(ws, priv, token, chain_id)
 
 
 async def main():
-    nonce, auth_token_cookie = perpl_auth(API_URL, PERPL_CHAIN_ID, WALLET_ADDRESS, WALLET_KEY)
-    await authed_websocket(PERPL_WS_URL, nonce, auth_token_cookie)
+    token, priv = load_api_key()
+    await authed_websocket(PERPL_WS_URL, priv, token, PERPL_CHAIN_ID)
 
 
 if __name__ == "__main__":

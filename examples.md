@@ -24,49 +24,68 @@ const MARKETS = {
 
 ## Authentication
 
-### Full Auth Flow
+Perpl authenticates programmatic clients with **API keys** (an Ed25519 key
+pair). Every request is signed with the key's private key — there is no bearer
+token or session cookie.
+
+### Getting a key
+
+Create a key with the web UI — connect your wallet at:
+
+- **Mainnet**: https://app.perpl.xyz/apikeys
+- **Testnet**: https://testnet.perpl.xyz/apikeys
+
+The UI walks you through the wallet-signed enrollment and hands you the private
+key (`privateKey`, Ed25519) plus the `API_KEY` token (`X-API-Key`). Third-party
+integrations can also enroll keys programmatically — see
+[Integrations](./integrations.md); a runnable JS enrollment example lives at
+`examples/js/enroll_api_key.js`.
+
+The runnable example programs read an already-enrolled key from the environment:
 
 ```typescript
-import { signMessage } from 'viem/accounts';
+import * as ed from '@noble/ed25519';
 
-async function authenticate(privateKey: `0x${string}`, address: string, ref_code: string='') {
-  // Step 1: Get payload
-  const payloadRes = await fetch(`${API_URL}/v1/auth/payload`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chain_id: CHAIN_ID, address })
+const API_URL = process.env.PERPL_API_URL || 'https://app.perpl.xyz/api';
+const CHAIN_ID = Number(process.env.PERPL_CHAIN_ID) || 143;
+
+// Provide an enrolled key via the environment:
+//   PERPL_API_KEY        — the X-API-Key token
+//   PERPL_API_KEY_SECRET — hex of the 32-byte Ed25519 private key
+const API_KEY = process.env.PERPL_API_KEY!;
+const privateKey = Buffer.from(process.env.PERPL_API_KEY_SECRET!.replace(/^0x/, ''), 'hex');
+```
+
+### Signed REST requests
+
+Every REST call is signed with a `signedFetch` helper. It builds the canonical
+string, signs it with the key, and sends the four `X-API-*` headers (see
+[authentication.md](./authentication.md#authenticating-rest-requests)).
+
+```typescript
+import { createHash, randomBytes } from 'crypto';
+import * as ed from '@noble/ed25519';
+
+// `target` is the path + query string exactly as sent, e.g. /v1/trading/fills?count=100
+async function signedFetch(method: string, target: string, body = '') {
+  const timestamp = Date.now().toString();
+  const nonce = randomBytes(16).toString('base64url');
+  const bodyHash = createHash('sha256').update(body).digest('hex');
+
+  const canonical = [CHAIN_ID, method, target, timestamp, nonce, bodyHash].join('\n');
+  const sig = await ed.signAsync(Buffer.from(canonical), privateKey);
+
+  return fetch(`${API_URL}${target}`, {
+    method,
+    headers: {
+      'X-API-Key': API_KEY,
+      'X-API-Timestamp': timestamp,
+      'X-API-Nonce': nonce,
+      'X-API-Signature': Buffer.from(sig).toString('base64url'),
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
+    },
+    ...(body ? { body } : {}),
   });
-  const payload = await payloadRes.json();
-
-  // Step 2: Sign the SIWE message
-  const signature = await signMessage({
-    message: payload.message,
-    privateKey
-  });
-
-  // Step 3: Connect (chain_id and address must be included!)
-  const connectRes = await fetch(`${API_URL}/v1/auth/connect`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify({
-      chain_id: CHAIN_ID,
-      address,
-      ...payload,
-      ref_code,
-      signature
-    })
-  });
-
-  if (!connectRes.ok) {
-    if (connectRes.status === 418) throw new Error('Access code required');
-    if (connectRes.status === 423) throw new Error('Invalid access code');
-    if (connectRes.status === 403) throw new Error('Access denied');
-    throw new Error(`Auth failed: ${connectRes.status}`);
-  }
-
-  const auth = await connectRes.json();
-  return auth.nonce;
 }
 ```
 
@@ -238,6 +257,9 @@ function subscribeToTrades(marketId: number, onTrade: (trade: any) => void) {
 ### Trading Client
 
 ```typescript
+import { randomBytes } from 'crypto';
+import * as ed from '@noble/ed25519';
+
 class TradingClient {
   private ws: WebSocket;
   private requestId = Date.now();
@@ -247,20 +269,28 @@ class TradingClient {
   private pingInterval?: ReturnType<typeof setInterval>;
 
   constructor(
-    private authNonce: string,
+    private privateKey: Uint8Array,
+    private apiKey: string,
     private onUpdate: (type: string, data: any) => void
   ) {}
 
   connect() {
     this.ws = new WebSocket(`${WS_URL}/ws/v1/trading`);
 
-    this.ws.onopen = () => {
-      // Authenticate
+    this.ws.onopen = async () => {
+      // Authenticate: signed ApiKeySignIn frame as the first message.
+      const timestamp = Date.now().toString();
+      const nonce = randomBytes(16).toString('base64url');
+      const canonical = [CHAIN_ID, 'trading-ws-signin', timestamp, nonce].join('\n');
+      const sig = await ed.signAsync(Buffer.from(canonical), this.privateKey);
+
       this.ws.send(JSON.stringify({
-        mt: 4,
+        mt: 29, // ApiKeySignIn
         chain_id: CHAIN_ID,
-        nonce: this.authNonce,
-        ses: crypto.randomUUID()
+        api_key: this.apiKey,
+        timestamp,
+        nonce,
+        signature: Buffer.from(sig).toString('base64url')
       }));
     };
 
@@ -412,8 +442,8 @@ class TradingClient {
 }
 
 // Usage
-const nonce = await authenticate(privateKey, address);
-const client = new TradingClient(nonce, (type, data) => {
+// privateKey + API_KEY come from the enrolled key (see Authentication above).
+const client = new TradingClient(privateKey, API_KEY, (type, data) => {
   console.log(type, data);
 });
 client.connect();
@@ -434,19 +464,18 @@ setTimeout(async () => {
 ### Get All Fills
 
 ```typescript
-async function getAllFills(authNonce: string): Promise<any[]> {
+async function getAllFills(): Promise<any[]> {
   const fills: any[] = [];
   let cursor: string | undefined;
 
   do {
-    const url = new URL(`${API_URL}/v1/trading/fills`);
-    if (cursor) url.searchParams.set('page', cursor);
-    url.searchParams.set('count', '100');
+    // Build the query string; the signature binds the full request target.
+    const params = new URLSearchParams();
+    if (cursor) params.set('page', cursor);
+    params.set('count', '100');
+    const target = `/v1/trading/fills?${params.toString()}`;
 
-    const res = await fetch(url.toString(), {
-      headers: { 'X-Auth-Nonce': authNonce },
-      credentials: 'include'
-    });
+    const res = await signedFetch('GET', target);
 
     const data = await res.json();
     fills.push(...data.d);
@@ -460,19 +489,18 @@ async function getAllFills(authNonce: string): Promise<any[]> {
 ### Get Position PnL History
 
 ```typescript
-async function getPositionHistory(authNonce: string): Promise<any[]> {
+async function getPositionHistory(): Promise<any[]> {
   const positions: any[] = [];
   let cursor: string | undefined;
 
   do {
-    const url = new URL(`${API_URL}/v1/trading/position-history`);
-    if (cursor) url.searchParams.set('page', cursor);
-    url.searchParams.set('count', '50');
+    // Build the query string; the signature binds the full request target.
+    const params = new URLSearchParams();
+    if (cursor) params.set('page', cursor);
+    params.set('count', '50');
+    const target = `/v1/trading/position-history?${params.toString()}`;
 
-    const res = await fetch(url.toString(), {
-      headers: { 'X-Auth-Nonce': authNonce },
-      credentials: 'include'
-    });
+    const res = await signedFetch('GET', target);
 
     const data = await res.json();
     positions.push(...data.d);
@@ -558,8 +586,10 @@ function handleWebSocketError(ws: WebSocket, onReconnect: () => void) {
 
   ws.onclose = (event) => {
     if (event.code === 3401) {
-      // Auth expired - need to re-authenticate
-      console.error('Auth expired, please re-authenticate');
+      // WebSocket auth failed - reconnect and re-send a fresh signed
+      // mt:29 ApiKeySignIn frame (new timestamp + nonce).
+      console.error('WebSocket auth failed, reconnecting to re-sign in');
+      onReconnect();
       return;
     }
 

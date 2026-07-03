@@ -1,74 +1,76 @@
-// Authenticating with the API and making a REST request
-import { ethers } from 'ethers';
+// Authenticating with the API (Ed25519 API key) and making a signed REST request.
+//
+// An API key is an Ed25519 key pair. The server only stores the public key;
+// the private key never leaves this machine. Every request is signed with the
+// key's private key.
+//
+// This example uses a key you already have. Create one in the web UI
+// (connect wallet -> create key):
+//   Mainnet: https://app.perpl.xyz/apikeys
+//   Testnet: https://testnet.perpl.xyz/apikeys
+// then set PERPL_API_KEY (the X-API-Key token) and PERPL_API_KEY_SECRET (hex of
+// the 32-byte Ed25519 private key). To enroll a key programmatically instead,
+// see enroll_api_key.js.
+import * as ed from '@noble/ed25519';
+import { createHash, randomBytes } from 'crypto';
 import { fileURLToPath } from 'url';
 
 
 const API_URL = process.env.PERPL_API_URL || 'https://app.perpl.xyz/api';
-const AUTH_PAYLOAD_URL = '/v1/auth/payload';
-const CONNECT_PAYLOAD_URL = '/v1/auth/connect';
-const PERPL_CHAIN_ID = Number(process.env.PERPL_CHAIN_ID) || 143;
-const TEST_API = '/v1/profile/contact-info';
+const CHAIN_ID = Number(process.env.PERPL_CHAIN_ID) || 143;
+const API_KEY = process.env.PERPL_API_KEY;
+const API_KEY_SECRET = process.env.PERPL_API_KEY_SECRET;
+
+const TEST_API = '/v1/trading/fills?count=1';
 
 
-const WALLET_ADDRESS = '0xYourWalletAddress';
-const WALLET_KEY = '0xYourWalletPrivateKey';
-
-
-export async function perplAuth(apiUrl, chainId, walletAddress, walletKey, ref_code='') {
-    // Step 1: Get signing payload
-    const authPayload = { chain_id: chainId, address: walletAddress };
-    const payloadRes = await fetch(`${apiUrl}${AUTH_PAYLOAD_URL}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(authPayload),
-    });
-    const signingPayload = await payloadRes.json();
-
-    // Step 2: Sign the SIWE with your wallet
-    const wallet = new ethers.Wallet(walletKey);
-    const signature = await wallet.signMessage(signingPayload.message);
-
-    // Step 3: Connect with signature (chain_id and address required!)
-    const connectRequest = {
-        chain_id: chainId,
-        address: walletAddress,
-        message: signingPayload.message,
-        nonce: signingPayload.nonce,
-        mac: signingPayload.mac,
-        ref_code,
-        signature,
-        issued_at: signingPayload.issued_at,
-    };
-
-    const connectRes = await fetch(`${apiUrl}${CONNECT_PAYLOAD_URL}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(connectRequest),
-    });
-    const connectResponse = await connectRes.json();
-    const nonce = connectResponse.nonce;
-    const authTokenCookie = connectRes.headers.get('set-cookie')?.match(/auth-token=([^;]+)/)?.[1];
-    return { nonce, authTokenCookie };
+// Load an already-enrolled API key from the environment. Returns { token, privateKey }
+// where token is the opaque X-API-Key value and privateKey is the 32-byte Ed25519 secret.
+export function loadApiKey() {
+    if (!API_KEY || !API_KEY_SECRET) {
+        console.error(
+            'Set PERPL_API_KEY and PERPL_API_KEY_SECRET — create a key at the web UI ' +
+            'https://app.perpl.xyz/apikeys (testnet https://testnet.perpl.xyz/apikeys) ' +
+            'or run `node enroll_api_key.js`',
+        );
+        process.exit(1);
+    }
+    const privateKey = Uint8Array.from(Buffer.from(API_KEY_SECRET.replace(/^0x/, ''), 'hex'));
+    return { token: API_KEY, privateKey };
 }
 
 
-async function makeAuthedRequest(apiUrl, nonce, authTokenCookie) {
-    const url = `${apiUrl}${TEST_API}`;
-    const res = await fetch(url, {
+// Sign a request with the API key and send it. `target` is the path+query exactly
+// as the gateway receives it (e.g. '/v1/trading/fills?count=100'); it is signed
+// byte-for-byte and must match the URL sent. `body` is the raw JSON string ('' for GET).
+export async function signedFetch(method, target, body = '') {
+    const { token, privateKey } = loadApiKey();
+    const timestamp = Date.now().toString();
+    const nonce = randomBytes(16).toString('base64url');
+    const bodyHash = createHash('sha256').update(body).digest('hex');
+
+    const canonical = [CHAIN_ID, method, target, timestamp, nonce, bodyHash].join('\n');
+    const sig = Buffer.from(await ed.signAsync(Buffer.from(canonical), privateKey)).toString('base64url');
+
+    return fetch(`${API_URL}${target}`, {
+        method,
         headers: {
-            'X-Auth-Nonce': nonce,
-            'Cookie': `auth-token=${authTokenCookie}`,
+            'X-API-Key': token,
+            'X-API-Timestamp': timestamp,
+            'X-API-Nonce': nonce,
+            'X-API-Signature': sig,
+            ...(body ? { 'Content-Type': 'application/json' } : {}),
         },
+        ...(body ? { body } : {}),
     });
-    const data = await res.json();
-    console.log(`Authed Request: ${url}`);
-    console.log('Authed Response:', data);
 }
 
 
 async function main() {
-    const { nonce, authTokenCookie } = await perplAuth(API_URL, PERPL_CHAIN_ID, WALLET_ADDRESS, WALLET_KEY);
-    await makeAuthedRequest(API_URL, nonce, authTokenCookie);
+    const res = await signedFetch('GET', TEST_API);
+    const data = await res.json();
+    console.log(`Authed Request: ${API_URL}${TEST_API}`);
+    console.log('Authed Response:', data);
 }
 
 

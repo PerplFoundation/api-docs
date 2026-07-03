@@ -1,72 +1,91 @@
-# Authenticating with the API and making a REST request
+# Making a signed REST request with an API key you already have.
+#
+# An API key is an Ed25519 key pair. The server stores only the public key;
+# every request is signed with the private key (there is no bearer token to
+# leak). This example uses a key that already exists — see below for how to
+# create one.
+#
+# Create a key via the web UI (connect your wallet):
+#   Mainnet: https://app.perpl.xyz/apikeys
+#   Testnet: https://testnet.perpl.xyz/apikeys
+# The UI hands you the X-API-Key token and the Ed25519 private key. Export them:
+#   export PERPL_API_KEY=<token>
+#   export PERPL_API_KEY_SECRET=<hex of the 32-byte Ed25519 private key>
+#
+# To enroll a key programmatically instead, see examples/js/enroll_api_key.js.
+import base64
+import hashlib
 import os
-import requests
+import secrets
+import sys
+import time
 
-from eth_account import Account
-from eth_account.messages import encode_defunct
+import requests
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
 API_URL = os.environ.get("PERPL_API_URL", "https://app.perpl.xyz/api")
-AUTH_PAYLOAD_URL = "/v1/auth/payload"
-CONNECT_PAYLOAD_URL = "/v1/auth/connect"
 PERPL_CHAIN_ID = int(os.environ.get("PERPL_CHAIN_ID", 143))
-TEST_API = "/v1/profile/contact-info"
+TEST_API = "/v1/trading/fills?count=1"
 
 
-WALLET_ADDRESS = '0xYourWalletAddress'
-WALLET_KEY = '0xYourWalletPrivateKey'
+def _b64url(raw: bytes) -> str:
+    # base64url without padding, matching the server's canonicalization.
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
 
 
-def perpl_auth(api_url, chain_id, wallet_address, wallet_key, ref_code=""):
-    # Step 1: Get signing payload
-    auth_payload = {
-        "chain_id": chain_id,
-        "address": wallet_address,
+def load_api_key():
+    # Load an already-enrolled key from the environment:
+    #   PERPL_API_KEY        — the opaque X-API-Key token
+    #   PERPL_API_KEY_SECRET — hex of the 32-byte Ed25519 private key (optional 0x prefix)
+    # Returns (token, priv).
+    token = os.environ.get("PERPL_API_KEY")
+    secret = os.environ.get("PERPL_API_KEY_SECRET")
+    if not token or not secret:
+        print(
+            "Set PERPL_API_KEY and PERPL_API_KEY_SECRET — create a key at the web UI "
+            "https://app.perpl.xyz/apikeys (testnet https://testnet.perpl.xyz/apikeys) "
+            "or run the JS enrollment example examples/js/enroll_api_key.js"
+        )
+        sys.exit(1)
+
+    priv = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(secret.removeprefix("0x")))
+    return token, priv
+
+
+def signed_request(api_url, method, target, priv, token, chain_id, body=""):
+    # Sign the canonical string and issue the request with the four X-API-* headers.
+    method = method.upper()
+    timestamp = str(int(time.time() * 1000))
+    nonce = _b64url(secrets.token_bytes(16))
+    body_hash = hashlib.sha256(body.encode()).hexdigest()
+
+    # canonical = chain_id \n METHOD \n request-target \n timestamp_ms \n nonce \n hex(sha256(body))
+    canonical = "\n".join([str(chain_id), method, target, timestamp, nonce, body_hash])
+    sig = _b64url(priv.sign(canonical.encode()))
+
+    headers = {
+        "X-API-Key": token,
+        "X-API-Timestamp": timestamp,
+        "X-API-Nonce": nonce,
+        "X-API-Signature": sig,
     }
-    url = api_url + AUTH_PAYLOAD_URL
-    response = requests.post(url, json=auth_payload)
-    signing_payload = response.json()
+    if body:
+        headers["Content-Type"] = "application/json"
 
-    # Step 2: Sign the SIWE with your wallet
-    account = Account.from_key(wallet_key)
-    message = signing_payload["message"]
-    signed_message = account.sign_message(encode_defunct(text=message))
-
-    # Step 3: Connect with signature (chain_id and address required!)
-    connect_url = api_url + CONNECT_PAYLOAD_URL
-    connect_request = {
-        "chain_id": chain_id,
-        "address": wallet_address,
-        "message": message,
-        "nonce": signing_payload["nonce"],
-        "mac": signing_payload["mac"],
-        "ref_code": ref_code,
-        "signature": "0x" + signed_message.signature.hex(),
-        "issued_at": signing_payload["issued_at"],
-    }
-
-    response = requests.post(connect_url, json=connect_request)
-    connect_response = response.json()
-    nonce = connect_response["nonce"]
-    auth_token_cookie = response.cookies["auth-token"]
-    return nonce, auth_token_cookie
+    return requests.request(method, api_url + target, headers=headers, data=body or None)
 
 
-def make_authed_request(api_url, nonce, auth_token_cookie):
-    session = requests.Session()
-    session.headers.update({"X-Auth-Nonce": nonce})
-    session.cookies.update({"auth-token": auth_token_cookie})
-
-    url = api_url + TEST_API
-    response = session.get(url)
-    data = response.json()
-    print(f"Authed Request: {url}")
-    print(f"Authed Response: {data}")
+def signed_get(api_url, target, priv, token, chain_id, body=""):
+    return signed_request(api_url, "GET", target, priv, token, chain_id, body)
 
 
 def main():
-    nonce, auth_token_cookie = perpl_auth(API_URL, PERPL_CHAIN_ID, WALLET_ADDRESS, WALLET_KEY)
-    make_authed_request(API_URL, nonce, auth_token_cookie)
+    token, priv = load_api_key()
+
+    response = signed_get(API_URL, TEST_API, priv, token, PERPL_CHAIN_ID)
+    print(f"Authed Request: {API_URL + TEST_API}")
+    print(f"Authed Response: {response.json()}")
 
 
 if __name__ == "__main__":
