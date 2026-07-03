@@ -14,3 +14,11 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+# Example build artifacts
+node_modules/
+package-lock.json
+examples/rust/target/
+examples/rust/Cargo.lock
+.venv/
+venv/

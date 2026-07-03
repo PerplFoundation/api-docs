@@ -34,7 +34,6 @@ interface MessageHeader {
 | 1 | Ping | Client → Server |
 | 2 | Pong | Server → Client |
 | 3 | StatusResponse | Server → Client |
-| 4 | AuthSignIn | Client → Server |
 | 5 | SubscriptionRequest | Client → Server |
 | 6 | SubscriptionResponse | Server → Client |
 | 7 | GasPriceUpdate | Server → Client |
@@ -57,6 +56,7 @@ interface MessageHeader {
 | 26 | PositionsSnapshot | Server → Client |
 | 27 | PositionsUpdate | Server → Client |
 | 28 | AccountStatsUpdate | Server → Client |
+| 29 | ApiKeySignIn | Client → Server |
 | 100 | Heartbeat | Server → Client |
 
 ---
@@ -217,19 +217,62 @@ interface Heartbeat {
 
 ### Connecting & Authenticating
 
+The primary way to authenticate the trading WebSocket is **API-key sign-in**
+(`mt: 29`). API keys are Ed25519 key pairs created at the web UI
+(https://app.perpl.xyz/apikeys for mainnet, https://testnet.perpl.xyz/apikeys
+for testnet) or programmatically (see [Integrations](./integrations.md)).
+Placing orders requires a `trade`-scoped key — a `read`-scoped key still receives
+snapshots/updates, but its `OrderRequest` frames are rejected with `403`.
+
+#### API-key sign-in (mt: 29)
+
+Send an `ApiKeySignIn` frame as the **first** message after the socket opens.
+The Ed25519 signature covers the WS canonical string — four fields joined by
+`\n` (newline):
+
+```
+<chain_id>
+trading-ws-signin      literal action tag
+<timestamp_ms>         unix epoch milliseconds, decimal string
+<nonce>                client-random, base64url (no padding)
+```
+
+Frame shape:
+
 ```typescript
+{
+  mt: 29,               // MsgTypeApiKeySignIn
+  chain_id: number,
+  api_key: string,      // X-API-Key token from enrollment
+  timestamp: string,    // unix ms, decimal
+  nonce: string,        // client-random, base64url
+  signature: string,    // base64url(ed25519 signature over the canonical string)
+}
+```
+
+```typescript
+import { randomBytes } from 'crypto';
+import * as ed from '@noble/ed25519';
+
 const WS_URL = process.env.PERPL_WS_URL || 'wss://app.perpl.xyz';
 const CHAIN_ID = Number(process.env.PERPL_CHAIN_ID) || 143;
 
 const ws = new WebSocket(`${WS_URL}/ws/v1/trading`);
 
-ws.onopen = () => {
-  // Must authenticate immediately
+ws.onopen = async () => {
+  const timestamp = Date.now().toString();
+  const nonce = randomBytes(16).toString('base64url');
+  const canonical = [CHAIN_ID, 'trading-ws-signin', timestamp, nonce].join('\n');
+  const sig = await ed.signAsync(Buffer.from(canonical), privateKey);
+
+  // Must authenticate immediately, as the first frame
   ws.send(JSON.stringify({
-    mt: 4,  // AuthSignIn
+    mt: 29,             // MsgTypeApiKeySignIn
     chain_id: CHAIN_ID,
-    nonce: authNonce,  // From /api/v1/auth/connect
-    ses: crypto.randomUUID()
+    api_key: API_KEY,   // X-API-Key token from enrollment
+    timestamp,
+    nonce,
+    signature: Buffer.from(sig).toString('base64url'),
   }));
 };
 ```
@@ -257,10 +300,11 @@ interface OrderRequest {
   p?: number;          // Limit price (0 for market)
   s: number;           // Size (scaled)
   a?: string;          // Amount (for collateral increase)
+  ms?: number;         // Maximum market order price slippage, bps
   tif?: number;        // Time-in-force block - The last block number on the Monad chain where this order is valid
   fl: OrderFlags;      // Flags (PostOnly, FOK, IOC)
   tp?: number;         // Trigger price (stop/TP orders)
-  tpc?: number;        // Trigger condition (1=GTE, 2=LTE)
+  tpc?: number;        // Trigger condition (1=GTELast, 2=LTELast, 3=GTEMark, 4=LTEMark)
   tr?: number;         // Linked trigger request ID
   lp?: number;         // Linked position ID
   lv: number;          // Leverage (hundredths, e.g., 1000 = 10x)
@@ -301,7 +345,7 @@ Client side is responsible for retries and should follow the following rules:
 For each RequestID, multiple `Order` messages with status updates can be received.
 Client side is responsible for deduplication of these messages, processing only:
   a. The first failure message if all received messages are failures (`OrderStatusFailed`)
-  b. The first non-failure message received (OrderStatusOpen, OrderStatusPartiallyFilled, OrderStatusFilled, OrderStatusCanceled, OrderStatusUntriggered, OrderStatusTriggered)
+  b. The first non-failure message received (OrderStatusOpen, OrderStatusPartiallyFilled, OrderStatusFilled, OrderStatusCanceled, OrderStatusUntriggered, OrderStatusTriggered, OrderStatusExecuted)
 
 | Scenario | Action |
 |----------|--------|
@@ -312,7 +356,7 @@ Client side is responsible for deduplication of these messages, processing only:
 **Client-side deduplication**:
 
 Multiple updates may arrive for a single `rq`:
-- First non-failure status (`st: 2–5, 8, 9`) is definitive — ignore everything after, including later failures
+- First non-failure status (`st: 2–5, 8, 9, 10`) is definitive — ignore everything after, including later failures
 - If only failures (`st: 7`) arrive, process the first one only
 - After retrying with a new `rq`, ignore late failures from the old `rq`
 
@@ -432,6 +476,21 @@ interface Account {
 }
 ```
 
+### Account Stats (mt: 28)
+
+`AccountStatsUpdate` (mt: 28) carries an `AccountStats` body — per-account
+trading statistics (see [AccountStats](./types.md#accountstats)).
+
+```typescript
+interface AccountStatsUpdate {
+  mt: 28;
+  // AccountStats fields (see ./types.md#accountstats)
+}
+```
+
+Account stats are also delivered in the **WalletSnapshot** (mt: 19) via the
+wallet's `sts?` field.
+
 ### Heartbeat (Trading) {#heartbeat-trading}
 
 On the trading WebSocket, sequence tracking requires special initialization:
@@ -472,20 +531,20 @@ setInterval(() => {
 ### Error Handling
 
 **Close Code 3401**: Authentication failure
-- Re-authenticate via REST API
-- Reconnect with new nonce
+Reconnect and re-send a fresh signed `ApiKeySignIn` frame
+  (new `timestamp` + `nonce`, re-signed) as the first message
 
 ```typescript
-ws.onclose = (event) => {
+function handleClose(event) {
   if (event.code === 3401) {
-    // Re-authenticate
-    await refreshAuth();
+    // Auth failed — just reconnect; the onopen handler re-sends a freshly
+    // signed ApiKeySignIn frame (new timestamp + nonce) as the first message.
     reconnect();
   } else {
-    // Normal reconnection with backoff
-    setTimeout(reconnect, getBackoffDelay());
+    // Normal close — reconnect with backoff (applied by reconnect()).
+    reconnect();
   }
-};
+}
 ```
 
 ### Reconnection Strategy
@@ -493,6 +552,34 @@ ws.onclose = (event) => {
 ```typescript
 const RETRY_DELAYS = [1000, 2000, 4000, 8000, 16000, 32000, 60000];
 let retryCount = 0;
+let ws: WebSocket;
+
+// Open the socket and wire up the handlers. Called again by reconnect().
+function connect() {
+  ws = new WebSocket(`${WS_URL}/ws/v1/trading`);
+
+  ws.onopen = async () => {
+    // Authenticate immediately: the first frame is a signed ApiKeySignIn (mt: 29).
+    const timestamp = Date.now().toString();
+    const nonce = randomBytes(16).toString('base64url');
+    const canonical = [CHAIN_ID, 'trading-ws-signin', timestamp, nonce].join('\n');
+    const sig = await ed.signAsync(Buffer.from(canonical), privateKey);
+
+    ws.send(JSON.stringify({
+      mt: 29,             // MsgTypeApiKeySignIn
+      chain_id: CHAIN_ID,
+      api_key: API_KEY,   // X-API-Key token from enrollment
+      timestamp,
+      nonce,
+      signature: Buffer.from(sig).toString('base64url'),
+    }));
+
+    onConnectSuccess();
+  };
+
+  ws.onmessage = (event) => { /* handle snapshots/updates */ };
+  ws.onclose = handleClose;  // the onclose handler shown under "Error Handling"
+}
 
 function reconnect() {
   const delay = RETRY_DELAYS[Math.min(retryCount, RETRY_DELAYS.length - 1)];
@@ -505,6 +592,8 @@ function reconnect() {
 function onConnectSuccess() {
   retryCount = 0;
 }
+
+connect();
 ```
 
 ---

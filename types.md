@@ -124,6 +124,8 @@ interface ProtocolInstance {
   address: string;                    // Exchange contract
   collateral_token_id: TokenID;
   min_account_open_amount: Amount;
+  min_deposit_amount: Amount;      // Minimal deposit to top up an account
+  min_withdraw_amount: Amount;     // Minimal withdrawal amount
   max_account_equity?: Amount;
   max_account_trigger_orders: number;
 }
@@ -140,6 +142,23 @@ interface GasPrice {
   p50: Amount;    // 50th percentile
   min: Amount;    // Minimum priority
   base: Amount;   // Base fee only
+}
+```
+
+---
+
+## Context
+
+### Context
+
+Top-level payload returned by `/pub/context`.
+
+```typescript
+interface Context {
+  chain: Chain;
+  instances: ProtocolInstance[];
+  tokens: Token[];
+  markets: Market[];
 }
 ```
 
@@ -163,10 +182,11 @@ interface Market {
   funding_interval_blocks: number;
   order_ttl_blocks: number;
   order_retry_blocks: number;
-  order_max_price_impact_percent: number;
+  order_max_market_slippage_bps: number;  // Max market order slippage (bps)
   config: MarketConfig;
   state: MarketState;
   funding: FundingEvent;
+  points_boost_bps: number;   // Per-market points boost (bps, 10000 = 1x)
 }
 ```
 
@@ -217,6 +237,7 @@ interface FundingEvent {
   idx: Price;     // Index price
   ppl: SPrice;    // Payment per lot
   sum: SPrice;    // Funding sum
+  div: number;    // Scaling divider of the funding sum
 }
 ```
 
@@ -283,6 +304,7 @@ interface Order {
 | 7 | Failed |
 | 8 | Untriggered |
 | 9 | Triggered |
+| 10 | Executed |
 
 ### OrderFlags
 
@@ -298,25 +320,84 @@ interface Order {
 | Value | Name | Description |
 |-------|------|-------------|
 | 0 | Unspecified | |
-| 1 | GTE | Trigger when price >= trigger |
-| 2 | LTE | Trigger when price <= trigger |
+| 1 | GTELast | Trigger when last price >= trigger |
+| 2 | LTELast | Trigger when last price <= trigger |
+| 3 | GTEMark | Trigger when mark price >= trigger |
+| 4 | LTEMark | Trigger when mark price <= trigger |
 
 ### OrderStatusReason
 
-Common values:
-
 | Value | Name |
 |-------|------|
+| 0 | Unspecified |
+| 1 | AmountExceedsAvailableBalance |
+| 2 | AccountFrozen |
+| 3 | CancelExistingInvalidCloseOrders |
+| 4 | CantChangeCloseOrder |
+| 5 | ChangeExpiredOrderNeedsNewExpiry |
+| 6 | ClearingExpiredOrder |
+| 7 | ClearingFrozenAccountOrder |
+| 8 | ClearingInvalidCloseOrder |
+| 9 | ClearingSelfMatchingOrder |
+| 10 | CloseOrderExceedsPosition |
+| 11 | CloseOrderPositionMismatch |
+| 12 | ContractNotOperational |
+| 13 | CrossesBook |
+| 14 | ExceedsLastExecutionBlock |
+| 15 | ForwardingReverted |
 | 16 | ImmediateOrCancelExecuted |
+| 17 | ImmediateOrderUnderMinimum |
+| 18 | InsuficientFundsForRecycleFee |
+| 19 | InvalidAccountFrozenOrder |
+| 20 | InvalidExpiryBlock |
+| 21 | InvalidOrderId |
 | 22 | MakerOrderFilled |
+| 23 | MakerOrderSettlementFailed |
+| 24 | MaximumAccountOrders |
+| 25 | MaxMatchesReached |
+| 26 | NoOp |
+| 27 | OrderBookFull |
 | 28 | OrderCancelled |
+| 29 | OrderCancelledByAdmin |
+| 30 | OrderCancelledByLiquidator |
+| 31 | OrderChanged |
 | 32 | OrderDescIdTooLow |
+| 33 | OrderDoesNotExist |
+| 34 | OrderForwardingNotAllowed |
 | 35 | OrderPlaced |
 | 36 | OrderPostFailed |
+| 37 | OrderSettlementImpliesInsolvent |
+| 38 | OrderSizeExceedsAvailableSize |
+| 39 | PostOrderUnderMinimum |
+| 40 | PriceOutOfRange |
+| 41 | RecycleBalanceInsufficientSevere |
+| 42 | SizeOutOfRange |
 | 43 | TakerOrderFilled |
+| 44 | TakerOrderSettlementFailed |
+| 45 | UnableToCancelOrder |
 | 46 | UnmatchedLotRemainsInFillOrKill |
-
-These are the most common values. The full list has 56 entries.
+| 47 | UnspecifiedCollateral |
+| 48 | UnspecifiedPrice |
+| 49 | UnspecifiedSize |
+| 50 | WrongAccountForOrder |
+| 51 | WrongChainForOrder |
+| 52 | WrongMarketForOrder |
+| 53 | PerpetualInsolvent |
+| 54 | Triggered |
+| 55 | InvalidAmount |
+| 56 | InvalidFlags |
+| 57 | InvalidTriggerOrder |
+| 58 | WrongTriggerPosition |
+| 59 | TriggerDescIdTooLow |
+| 60 | TriggerOrderRequest |
+| 61 | ValueExceedsMaximum |
+| 62 | ClearingRemainingOrderLockBeyondBalance |
+| 63 | PriceSetDuringTriggerExec |
+| 64 | TriggeredExecutionAttemptsExhausted |
+| 65 | TriggeredOrderExecuted |
+| 66 | TriggeredOrderPartiallyFilled |
+| 67 | TriggeredOrderExpired |
+| 68 | TriggeredOrderRecoverableFailure |
 
 ---
 
@@ -361,6 +442,7 @@ interface Position {
   sd: PositionType;    // 1=Long, 2=Short
   c: Amount;           // Collateral
   ep: Price;           // Entry price
+  epr?: number;        // Q16 fractional residue of EntryPrice
   s: Size;             // Size
   fee: Amount;         // Fees paid
   efs: SPrice;         // Entry funding sum
@@ -370,7 +452,7 @@ interface Position {
   xp?: Price;          // Exit price
   xfs: SPrice;         // Exit funding sum
   ots: BlockTxTimestamp; // Open timestamp
-  e: Position[];       // Settlement events
+  e?: Position[];      // Settlement events (update only)
 }
 ```
 
@@ -423,6 +505,7 @@ interface Wallet {
   n: number;              // Current nonce
   fl: FeeLevelID;
   as?: Account[];         // Accounts (snapshot only)
+  sts?: AccountStats[];   // Account statistics (snapshot only)
 }
 ```
 
@@ -479,6 +562,22 @@ interface AccountEvent {
 | 11 | PositionCollateralDecreased |
 | 12 | LastForwardedDescIdReset |
 
+### AccountStats
+
+```typescript
+interface AccountStats {
+  mt: number;
+  in: InstanceID;
+  id: AccountID;
+  td: Amount;    // Total deposits (collateral token)
+  tw: Amount;    // Total withdrawals (collateral token)
+  tv: Amount;    // Total trading volume
+  trp: Amount;   // Total realized PnL
+  wr: number;    // Total win rate (bps)
+  tt: number;    // Total trades
+}
+```
+
 ---
 
 ## Market Data
@@ -527,17 +626,10 @@ interface Candle {
 ```typescript
 interface RefCode {
   code: string;
-  limit: number;
-  used: number;
-}
-```
-
-### ContactInfo
-
-```typescript
-interface ContactInfo {
-  contact: string;
-  x_challenge: string;
+  limit?: number;       // Max profiles that can use this code
+  used?: number;        // Profiles already created using this code
+  volume?: Amount;      // Total volume from referred profiles (excl. T2)
+  created_at: number;   // Ref code creation timestamp (ms)
 }
 ```
 
@@ -548,5 +640,105 @@ interface Announcement {
   id: number;
   title: string;
   content: string;
+}
+```
+
+---
+
+## API Keys
+
+Ed25519 per-request-signed API key authentication.
+
+### ScopeMask
+
+API key scope bitmask. `trade` implies `read`; withdrawals are never permitted via an API key.
+
+```typescript
+type ScopeMask = number;    // uint32 bitmask
+
+const ScopeRead: ScopeMask = 1 << 0;         // read account/order/position data
+const ScopeTrade: ScopeMask = 1 << 1;        // place/cancel/modify orders (implies read)
+const ScopeAll = ScopeRead | ScopeTrade;     // full scope
+```
+
+### ApiKeyPayloadRequest
+
+Requests the EIP-712 message to sign for enrolling an API key.
+
+```typescript
+interface ApiKeyPayloadRequest {
+  chain_id: number;
+  address: string;             // signer wallet (owner/operator)
+  public_key: string;          // Ed25519 public key (32 bytes)
+  scope_mask: ScopeMask;       // bitmask: 1=read, 2=trade
+  label: string;               // human-readable key label (mandatory)
+  expires_at?: number;         // Timestamp (ms), 0 = none
+  ip_cidrs?: string[];
+  target_profile?: string;     // Target delegated account, if applicable
+}
+```
+
+### ApiKeyPayloadResponse
+
+```typescript
+interface ApiKeyPayloadResponse {
+  typed_data?: any;            // EIP-712 typed data
+  mac: string;
+}
+```
+
+### ApiKeyEnrollRequest
+
+Submits the signed enrollment payload; `pop_signature` is the mandatory Ed25519 proof-of-possession over the typed-data hash.
+
+```typescript
+interface ApiKeyEnrollRequest {
+  chain_id: number;
+  address: string;
+  typed_data?: any;            // EIP-712 typed data
+  mac: string;
+  signature: string;
+  pop_signature: string;
+  target_profile?: string;     // Target delegated account, if applicable
+}
+```
+
+### ApiKeyInfo
+
+Public, non-secret view of an enrolled key.
+
+```typescript
+interface ApiKeyInfo {
+  api_key: string;             // Opaque identifier sent in X-API-Key header
+  address: string;
+  scope_mask: ScopeMask;
+  label: string;
+  ip_cidrs: string[];
+  origin: string;              // HTTP Origin the key was enrolled from
+  expires_at: number;          // Timestamp (ms), 0 = none
+  last_used_at: number;        // Timestamp (ms), 0 = never
+  created_at: number;          // Timestamp (ms)
+}
+```
+
+### ApiKeyEnrollResponse
+
+```typescript
+interface ApiKeyEnrollResponse {
+  api_key: ApiKeyInfo;
+}
+```
+
+### ApiKeySignInRequest
+
+First WebSocket frame for API-key authentication. Extends `MessageHeader`.
+
+```typescript
+interface ApiKeySignInRequest extends MessageHeader {
+  chain_id: number;
+  api_key: string;             // X-API-Key identifier issued at enrollment
+  timestamp: string;           // unix epoch milliseconds, decimal
+  nonce: string;               // client-random, base64url
+  signature: string;           // base64url(ed25519 signature)
 }
 ```

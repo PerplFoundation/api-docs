@@ -24,15 +24,17 @@ name = "fetch_smart_contract_info"
 path = "src/bin/fetch_smart_contract_info.rs"
 
 [dependencies]
-alloy = { version = "2", features = ["signer-local"] }
 anyhow = "1"
+base64 = "0.22"
+ed25519-dalek = "2"
 futures-util = "0.3"
 hex = "0.4"
+rand = "0.8"
 http = "1"
 reqwest = { version = "0.12", features = ["json", "cookies"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 url = "2.5.8"
-uuid = { version = "1", features = ["v4"] }

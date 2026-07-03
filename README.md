@@ -53,70 +53,46 @@ ws.onmessage = (event) => {
 
 ### 3. Authenticate (Required for Trading)
 
-> **Note**: Authentication requires a **whitelisted wallet**. Non-whitelisted wallets will receive HTTP 418 (Access code required). See [Wallet Requirements](#wallet-requirements) below.
+Programmatic clients authenticate with **API keys** (an Ed25519 key pair). You
+enroll the public key once — authorized by a one-time wallet signature — and
+then sign every request with the private key. There is no session cookie or
+bearer token.
+
+Create a key from the web UI (**mainnet** [app.perpl.xyz/apikeys](https://app.perpl.xyz/apikeys),
+**testnet** [testnet.perpl.xyz/apikeys](https://testnet.perpl.xyz/apikeys)).
+Third-party integrations can enroll keys programmatically — see
+**[Integrations](./integrations.md)**. For how to sign each request with a key,
+see **[Authentication](./authentication.md)**.
 
 ```typescript
-import { ethers } from "ethers";
+import * as ed from '@noble/ed25519';
+import { createHash, randomBytes } from 'crypto';
 
 const API_URL = process.env.PERPL_API_URL || 'https://app.perpl.xyz/api';
 const CHAIN_ID = Number(process.env.PERPL_CHAIN_ID) || 143;
 
-const address = '0xYourWalletAddress'
-const privateKey = '0xYourWalletPrivateKey'
+// An enrolled key (from the web UI or Integrations enrollment), read from the environment:
+const API_KEY = process.env.PERPL_API_KEY;                    // the opaque X-API-Key token
+const privateKey = Buffer.from((process.env.PERPL_API_KEY_SECRET ?? '').replace(/^0x/, ''), 'hex'); // Ed25519 private key
 
-// Step 1: Get signing payload
-const response = await fetch(`${API_URL}/v1/auth/payload`, {
-   method: 'POST',
-   headers: { 'Content-Type': 'application/json' },
-   body: JSON.stringify({
-      chain_id: CHAIN_ID,
-      address,
-   })
-});
+// Sign the canonical string and send the four X-API-* headers.
+const target = '/v1/trading/fills?count=1';
+const timestamp = Date.now().toString();
+const nonce = randomBytes(16).toString('base64url');
+const bodyHash = createHash('sha256').update('').digest('hex');
+const canonical = [CHAIN_ID, 'GET', target, timestamp, nonce, bodyHash].join('\n');
+const sig = await ed.signAsync(Buffer.from(canonical), privateKey);
 
-const payload = await response.json();
-// payload.message contains SIWE message to sign
-
-// Step 2: Sign the SIWE message with your wallet
-let wallet = new ethers.Wallet(privateKey);
-const signature = await wallet.signMessage(payload.message);
-
-// Step 3: Connect with signature (chain_id and address required!)
-const authResponse = await fetch(`${API_URL}/v1/auth/connect`, {
-   method: 'POST',
-   headers: { 'Content-Type': 'application/json' },
-   body: JSON.stringify({
-      chain_id: CHAIN_ID,
-      address,
-      message: payload.message,
-      nonce: payload.nonce,
-      issued_at: payload.issued_at,
-      mac: payload.mac,
-      signature: signature
-   })
-});
-
-if (authResponse.status === 418) {
-   console.log('Need access code');
-}
-
-// authentication uses both the auth-token cookie and a nonce value
-const auth = await authResponse.json();
-const cookie = authResponse.headers.get('set-cookie');
-
-// Step 4: Make an authenticated request sending both the nonce and auth-token cookie
-const contact_info_response = await fetch(`${API_URL}/v1/profile/contact-info`, {
-   method: 'GET',
+const response = await fetch(`${API_URL}${target}`, {
    headers: {
-      'Content-Type': 'application/json',
-      'X-Auth-Nonce': auth.nonce,
-      'Cookie': cookie,
+      'X-API-Key': API_KEY,
+      'X-API-Timestamp': timestamp,
+      'X-API-Nonce': nonce,
+      'X-API-Signature': Buffer.from(sig).toString('base64url'),
    },
 });
 
-const contact_info = await contact_info_response.json();
-console.log(contact_info);
-
+console.log(await response.json());
 ```
 
 > **Important**: Successful API authentication does NOT mean you have an exchange account.
@@ -127,7 +103,8 @@ console.log(contact_info);
 
 | Document | Description |
 |----------|-------------|
-| [Authentication](./authentication.md) | Wallet signature auth flow |
+| [Authentication](./authentication.md) | Signing requests with an API key |
+| [Integrations](./integrations.md) | API key enrollment for third-party services |
 | [REST Endpoints](./rest-endpoints.md) | All HTTP endpoints |
 | [WebSocket](./websocket.md) | Real-time streams and trading |
 | [Types](./types.md) | Data type reference |
@@ -223,10 +200,9 @@ async function fetchWithRetry(url: string, options: RequestInit, maxRetries = 3)
 |------|---------|
 | 200 | Success |
 | 400 | Bad Request |
-| 403 | Forbidden - Access denied |
+| 401 | Unauthorized - bad/stale signature, replayed nonce, or revoked/expired key |
+| 403 | Forbidden - scope insufficient |
 | 404 | Not Found |
-| 418 | Access code required |
-| 423 | Access code invalid/exhausted |
 | 429 | Too Many Requests |
 | 500 | Internal Server Error |
 
@@ -236,16 +212,9 @@ async function fetchWithRetry(url: string, options: RequestInit, maxRetries = 3)
 |------|---------|
 | 3401 | Unauthorized - Authentication failure |
 
-## Wallet Requirements
+## Endpoint Authentication
 
-### Whitelisted Wallet Required
-
-Perpl requires a **whitelisted wallet** to access authenticated endpoints. When authenticating with a non-whitelisted wallet, you'll receive:
-
-- **HTTP 418**: Access code required - wallet is not on the whitelist
-- **HTTP 423**: Access code invalid/exhausted - referral code was invalid
-
-### Public Endpoints (No Wallet Required)
+### Public Endpoints (No Auth)
 
 These endpoints work without authentication:
 
@@ -256,9 +225,9 @@ These endpoints work without authentication:
 | `GET /api/v1/profile/announcements` | Public announcements |
 | `wss://.../ws/v1/market-data` | Real-time market data streams |
 
-### Authenticated Endpoints (Whitelisted Wallet Required)
+### Authenticated Endpoints (API Key)
 
-These endpoints require authentication with a whitelisted wallet:
+These endpoints require a signed request from an enrolled API key (see [Authentication](./authentication.md)):
 
 | Endpoint | Description |
 |----------|-------------|
@@ -267,38 +236,16 @@ These endpoints require authentication with a whitelisted wallet:
 | `GET /api/v1/trading/order-history` | Order history |
 | `GET /api/v1/trading/position-history` | Position history |
 | `GET /api/v1/profile/ref-code` | Your referral code |
-| `GET /api/v1/profile/contact-info` | Your contact info |
-| `wss://.../ws/v1/trading` | Real-time trading data |
+| `wss://.../ws/v1/trading` | Real-time trading data & order placement (`trade` scope) |
 
-### Testing with a Wallet
+### Testing
 
-To test authenticated endpoints, provide your wallet private key via environment variable:
-
-```bash
-# In your .env file
-OWNER_PRIVATE_KEY=0x...your_private_key_here...
-```
-
-Then run the API test script:
-
-```bash
-npm run test:api
-```
-
-Or test all authenticated endpoints:
-
-```bash
-npx tsx scripts/test-auth-endpoints.ts
-```
-
-### Getting Whitelisted
-
-To get your wallet whitelisted on Perpl:
-
-1. Visit [perpl.xyz](https://perpl.xyz) (or [testnet.perpl.xyz](https://testnet.perpl.xyz) for testnet)
-2. Connect your wallet
-3. Request access or use a referral code if available
-4. Once approved, your wallet can authenticate via the API
+Create a key at the web UI ([app.perpl.xyz/apikeys](https://app.perpl.xyz/apikeys),
+testnet [testnet.perpl.xyz/apikeys](https://testnet.perpl.xyz/apikeys)) or enroll
+one programmatically, then run the examples in `examples/` (see
+[Examples](./examples.md)). The example programs read your enrolled key from
+`PERPL_API_KEY` / `PERPL_API_KEY_SECRET`, and the wallet used for enrollment
+from a private key you supply.
 
 ## API Auth vs Smart Contract Account
 
@@ -306,14 +253,14 @@ To get your wallet whitelisted on Perpl:
 
 | Concept | What It Means | Required For |
 |---------|---------------|--------------|
-| **API Authentication** | Wallet is whitelisted and can call authenticated API endpoints | Reading order history, position history, trading WebSocket |
+| **API Authentication** | An enrolled API key can call authenticated API endpoints | Reading order history, position history, trading WebSocket |
 | **Exchange Account** | On-chain account exists on Exchange contract with collateral | Placing orders, holding positions, trading |
 
 ### Key Points
 
 1. **API auth does NOT create an exchange account**
-   - The `/auth` endpoint only verifies your wallet is whitelisted
-   - A successful auth response means you can use authenticated API endpoints
+   - Enrolling an API key only authorizes API access for your wallet
+   - A valid signed request means you can use authenticated API endpoints
    - It does NOT mean you can trade
 
 2. **Exchange account must be created on-chain**
@@ -380,6 +327,7 @@ cast send --from $WALLET_ADDRESS $SMART_CONTRACT_ADDRESS "createAccount(uint256)
 
 | Symptom | Cause | Solution |
 |---------|-------|----------|
-| API auth succeeds but `getAccountByAddr` returns `accountId: 0` | Wallet is whitelisted but no on-chain account | Create account with `createAccount()` |
+| API auth succeeds but `getAccountByAddr` returns `accountId: 0` | Signed requests work but no on-chain account | Create account with `createAccount()` |
 | Can read order history but can't place orders | API works but no exchange account | Create account with `createAccount()` |
-| HTTP 418 on `/auth/connect` | Wallet not whitelisted | Get whitelisted (see above) |
+| 401 on signed requests | Bad/stale signature, clock skew, or revoked/expired key | Re-sign with a fresh timestamp + nonce; check key status |
+| 403 on order placement | Key lacks `trade` scope | Enroll a `trade`-scoped key |
