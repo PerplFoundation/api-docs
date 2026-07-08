@@ -152,7 +152,9 @@ Market IDs differ between networks:
 | 1 | BTC |
 | 10 | MON |
 | 20 | ETH |
-| 30 | SOL |
+| 31 | SOL |
+| 40 | HYPE |
+| 50 | ZEC |
 
 **Testnet**:
 | Market ID | Symbol |
