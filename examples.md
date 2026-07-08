@@ -16,7 +16,9 @@ const MARKETS = {
   BTC: 1,
   MON: 10,
   ETH: 20,
-  SOL: 30,
+  SOL: 31,
+  HYPE: 40,
+  ZEC: 50,
 } as const;
 ```
 
