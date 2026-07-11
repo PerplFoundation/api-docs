@@ -171,10 +171,13 @@ Market IDs differ between networks:
 |---------------|-----------------|-------|
 | REST Public | ~100 req/min | `/api/v1/pub/*`, market data |
 | REST Authenticated | ~60 req/min | Profile, trading history |
-| WebSocket Messages | ~50 msg/sec | Per connection |
+| WebSocket Messages | ~120 msg/min | Per connection |
 | WebSocket Connections | ~5 per IP | Market data + trading |
 
-**Rate Limit Response**: HTTP 429 Too Many Requests
+> [!NOTE]
+> Use Change orders instead of Post + Cancel.
+
+**Rate Limit Response**: HTTP 429 Too Many Requests for REST and code 1008 for WebSocket
 
 ```typescript
 // Handle rate limiting with exponential backoff
