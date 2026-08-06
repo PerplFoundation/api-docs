@@ -180,7 +180,7 @@ interface Market {
   icon: string;
   funding_interval_sec: number;
   funding_interval_blocks: number;
-  order_ttl_blocks: number;
+  order_ttl_blocks: number;               // lb ceiling offset from head: lb <= head + order_ttl_blocks
   order_retry_blocks: number;
   order_max_market_slippage_bps: number;  // Max market order slippage (bps)
   config: MarketConfig;
