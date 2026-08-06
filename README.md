@@ -167,17 +167,54 @@ Market IDs differ between networks:
 
 ## Rate Limits
 
-| Endpoint Type | Estimated Limit | Notes |
-|---------------|-----------------|-------|
-| REST Public | ~100 req/min | `/api/v1/pub/*`, market data |
-| REST Authenticated | ~60 req/min | Profile, trading history |
-| WebSocket Messages | ~120 msg/min | Per connection |
-| WebSocket Connections | ~5 per IP | Market data + trading |
+### WebSocket
+
+Trading and market data are **separate servers with separate limits**. Sizing a
+market-data client against the trading numbers will get it closed.
+
+**Trading** (`/ws/v1/trading`):
+
+| | Testnet | Mainnet |
+|---|---|---|
+| Requests | 60/min | 120/min |
+| Connections | 4 per wallet address | 4 per wallet address |
+
+The connection cap is keyed on the owning **wallet address**, not the individual
+key. Every API key enrolled on a wallet shares one budget of 4, and logged-in
+browser sessions count against the same budget — a desk running two keys does
+not get 8 connections.
+
+Higher limits may be available for market makers — contact Perpl.
+
+**Market data** (`/ws/v1/market-data`) — per connection, identical on testnet and
+mainnet:
+
+| | Limit |
+|---|---|
+| Requests | 10/min |
+| Subscriptions | 16 |
+
+Application-level pings count toward the request budget, so a 30s keep-alive spends
+2 of the 10. Market-data connections do not need one — see
+[Keep-Alive](./websocket.md#keep-alive).
+
+Exceeding a **request-rate** limit closes the connection with code `1008` and no
+per-request status — anything in flight is lost silently. See
+[WebSocket Close Codes](#websocket-close-codes) for the reason strings.
+
+The **subscription** cap does not close the connection. The individual subscribe
+fails inside the `mt: 6` SubscriptionResponse with `code: 429`
+(`too many subscriptions`) and the socket stays usable — unsubscribe from
+something and retry.
 
 > [!NOTE]
 > Use Change orders instead of Post + Cancel.
 
-**Rate Limit Response**: HTTP 429 Too Many Requests for REST and code 1008 for WebSocket
+### REST
+
+REST requests are rate-limited at the edge. Limits are not published and may
+change without notice — treat HTTP 429 as the signal and back off exponentially
+(example below).
 
 ```typescript
 // Handle rate limiting with exponential backoff
@@ -195,8 +232,6 @@ async function fetchWithRetry(url: string, options: RequestInit, maxRetries = 3)
 }
 ```
 
-*Note: Actual limits may vary. Monitor for 429 responses and adjust request frequency accordingly.*
-
 ## Error Handling
 
 ### HTTP Status Codes
@@ -213,9 +248,18 @@ async function fetchWithRetry(url: string, options: RequestInit, maxRetries = 3)
 
 ### WebSocket Close Codes
 
-| Code | Meaning |
-|------|---------|
-| 3401 | Unauthorized - Authentication failure |
+| Code | Reason | Meaning |
+|------|--------|---------|
+| 1008 | `too many requests` | Request rate limit exceeded |
+| 1008 | `too many connections` | Connection cap exceeded |
+| 1008 | `ping timeout` | No response to the server's ping |
+| 1008 | `idle timeout` | No frame received within the idle window (5s mainnet, 10s testnet). Applies to the initial sign-in frame too |
+| 1011 | `failed to process` | Unknown market, an account not owned by the connected wallet, or an unparseable frame |
+| 3401 | — | Authentication failure |
+
+A close carries no per-request status. Any request in flight when the socket closes
+is lost silently — reconcile against `mt: 24` / snapshots after reconnecting, do
+not assume it was dropped.
 
 ## Endpoint Authentication
 

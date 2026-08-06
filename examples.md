@@ -264,17 +264,28 @@ import * as ed from '@noble/ed25519';
 
 class TradingClient {
   private ws: WebSocket;
-  private requestId = Date.now();
+  private requestId = 0;  // seeded from account.lfr on WalletSnapshot
+  private sn = 0;         // unique, non-zero per outbound frame; echoed as `cid` on mt: 3
   private accountId: number;
   private currentBlock: number = 0;
   private lastSn?: number;
   private pingInterval?: ReturnType<typeof setInterval>;
+  private marketTtl: Map<number, number> = new Map(); // marketId -> order_ttl_blocks
 
   constructor(
     private privateKey: Uint8Array,
     private apiKey: string,
     private onUpdate: (type: string, data: any) => void
   ) {}
+
+  // Call once before connect(). order_ttl_blocks is per-market and can change,
+  // so read it at runtime rather than hardcoding a value.
+  async loadMarkets() {
+    const context = await getContext();
+    for (const market of context.markets.values()) {
+      this.marketTtl.set(market.id, market.order_ttl_blocks);
+    }
+  }
 
   connect() {
     this.ws = new WebSocket(`${WS_URL}/ws/v1/trading`);
@@ -300,8 +311,21 @@ class TradingClient {
       const msg = JSON.parse(event.data);
 
       switch (msg.mt) {
+        case 3: // StatusResponse — one per mt: 22 frame
+          // msg.cid is the `sn` we sent (omitted if that sn was 0).
+          // code 0 = accepted for forwarding, not filled; outcome comes via mt: 24.
+          if (msg.status?.code === 0) {
+            this.onUpdate('orderAccepted', msg);
+          } else {
+            // Rejected at the gateway — no mt: 24 will follow for this frame.
+            console.warn('Order rejected:', { cid: msg.cid, status: msg.status });
+            this.onUpdate('orderRejected', msg);
+          }
+          break;
         case 19: // WalletSnapshot
           this.accountId = msg.as?.[0]?.id;
+          // rq = max(localCounter, account.lfr) + 1
+          this.requestId = Math.max(this.requestId, msg.as?.[0]?.lfr ?? 0);
           this.lastSn = msg.sn; // Initialize sequence tracking
           this.onUpdate('wallet', msg);
           break;
@@ -345,6 +369,18 @@ class TradingClient {
     return ++this.requestId;
   }
 
+  private nextSn(): number {
+    return ++this.sn;
+  }
+
+  private lastExecBlock(marketId: number): number {
+    const ttl = this.marketTtl.get(marketId);
+    if (ttl == null) {
+      throw new Error(`Unknown market ${marketId} — order_ttl_blocks not loaded`);
+    }
+    return this.currentBlock + ttl;
+  }
+
   async openLong(
     marketId: number,
     size: number,
@@ -353,6 +389,7 @@ class TradingClient {
   ) {
     const order = {
       mt: 22,
+      sn: this.nextSn(),      // unique, non-zero; correlates the mt: 3 status
       rq: this.nextRequestId(),
       mkt: marketId,
       acc: this.accountId,
@@ -361,7 +398,7 @@ class TradingClient {
       s: size,
       fl: price ? 0 : 4, // GTC for limit, IOC for market
       lv: leverage * 100,
-      lb: this.currentBlock + 100
+      lb: this.lastExecBlock(marketId)
     };
 
     this.ws.send(JSON.stringify(order));
@@ -376,6 +413,7 @@ class TradingClient {
   ) {
     const order = {
       mt: 22,
+      sn: this.nextSn(),
       rq: this.nextRequestId(),
       mkt: marketId,
       acc: this.accountId,
@@ -384,7 +422,7 @@ class TradingClient {
       s: size,
       fl: price ? 0 : 4,
       lv: leverage * 100,
-      lb: this.currentBlock + 100
+      lb: this.lastExecBlock(marketId)
     };
 
     this.ws.send(JSON.stringify(order));
@@ -400,6 +438,7 @@ class TradingClient {
   ) {
     const order = {
       mt: 22,
+      sn: this.nextSn(),
       rq: this.nextRequestId(),
       mkt: marketId,
       acc: this.accountId,
@@ -409,7 +448,7 @@ class TradingClient {
       fl: price ? 0 : 4,
       lp: positionId,
       lv: 0,
-      lb: this.currentBlock + 100
+      lb: this.lastExecBlock(marketId)
     };
 
     this.ws.send(JSON.stringify(order));
@@ -419,6 +458,7 @@ class TradingClient {
   async cancelOrder(marketId: number, orderId: number) {
     const order = {
       mt: 22,
+      sn: this.nextSn(),
       rq: this.nextRequestId(),
       mkt: marketId,
       acc: this.accountId,
@@ -427,7 +467,7 @@ class TradingClient {
       s: 0,
       fl: 0,
       lv: 0,
-      lb: this.currentBlock + 100
+      lb: this.lastExecBlock(marketId)
     };
 
     this.ws.send(JSON.stringify(order));
@@ -448,6 +488,7 @@ class TradingClient {
 const client = new TradingClient(privateKey, API_KEY, (type, data) => {
   console.log(type, data);
 });
+await client.loadMarkets();  // per-market order_ttl_blocks, for computing `lb`
 client.connect();
 
 // Wait for connection and snapshots...

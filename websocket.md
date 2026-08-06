@@ -102,6 +102,13 @@ ws.send(JSON.stringify({
 }));
 ```
 
+The market-data server allows **16 subscriptions** and **10 requests/min** per
+connection — lower than the trading server, and the same on testnet and mainnet.
+Batch multiple streams into one `mt: 5` frame rather than sending one per stream.
+The two limits fail differently: exceeding the request rate closes the socket with
+`1008`, while exceeding the subscription cap only fails that entry in the response
+(see below). See [Rate Limits](./README.md#rate-limits).
+
 ### Subscription Response
 
 ```typescript
@@ -111,12 +118,21 @@ interface SubscriptionResponse {
     stream: string;
     sid?: number;      // Subscription ID (use to match updates)
     status?: {
-      code: number;    // 0 = success
+      code: number;    // 0 = success; 429 = too many subscriptions; 404 = unknown stream
       error?: string;
     };
   }>;
 }
 ```
+
+Failures here are **per-subscription, not per-connection** — the socket stays open
+and the other entries in the same request still succeed. Check `status.code` on
+every element rather than assuming the whole batch applied:
+
+| `code` | `error` | Recovery |
+|---|---|---|
+| 429 | `too many subscriptions` | Subscription cap reached; unsubscribe from a stream and retry |
+| 404 | `unknown stream` | Bad stream name or market ID; fix the identifier |
 
 ### Order Book Messages
 
@@ -226,7 +242,11 @@ snapshots/updates, but its `OrderRequest` frames are rejected with `403`.
 
 #### API-key sign-in (mt: 29)
 
-Send an `ApiKeySignIn` frame as the **first** message after the socket opens.
+Send an `ApiKeySignIn` frame as the **first** message after the socket opens, and
+send it promptly — the sign-in frame must arrive within the server's idle timeout
+(5s on mainnet, 10s on testnet) or the connection is closed with `1008`
+(`idle timeout`).
+
 The Ed25519 signature covers the WS canonical string — four fields joined by
 `\n` (newline):
 
@@ -292,6 +312,7 @@ The **WalletSnapshot** includes a sequence number (`sn` from `MessageHeader`) th
 ```typescript
 interface OrderRequest {
   mt: 22;
+  sn?: number;         // Unique, non-zero — echoed as `cid` on the mt: 3 status
   rq: number;          // Request ID (strictly increasing, API equivalent to client_order_id - enforced by smart contract only for API orders)
   mkt: number;         // Market ID
   acc: number;         // Account ID
@@ -308,7 +329,7 @@ interface OrderRequest {
   tr?: number;         // Linked trigger request ID
   lp?: number;         // Linked position ID
   lv: number;          // Leverage (hundredths, e.g., 1000 = 10x)
-  lb: number;          // Last execution block
+  lb: number;          // Last execution block: head < lb <= head + market.order_ttl_blocks, or 0
 }
 ```
 
@@ -339,7 +360,7 @@ Client side is responsible for retries and should follow the following rules:
    b. Before `LastExecBlock` expiration
 2. Retry with new RequestID only when:
    a. Failure status received for the original request
-   b. Current known block (eg. `Heartbeat.SeqNo`) is greater or equal to `LastExecBlock` of the original
+   b. Current known block (eg. `Heartbeat.h`) is greater or equal to `LastExecBlock` of the original
    request and no status updates were received - only if all block updates / heartbeats
    after order posting were observed (i.e. there were no reconnections)
 For each RequestID, multiple `Order` messages with status updates can be received.
@@ -362,7 +383,7 @@ Multiple updates may arrive for a single `rq`:
 
 **Trigger Orders**:
 
-- Trigger orders must set `lb: 0` (no expiry block). The server manages their lifecycle based on trigger conditions.
+- Set `lb: 0` on trigger orders. A non-zero `lb` is ignored after admission — each execution attempt gets a server-assigned window — but a stale value (`lb <= head`) is still rejected with `last exec block already expired`. Trigger lifetime is governed by `tif`, the trigger condition, and the `tr`/`lp` links.
 - `tp` + `tpc`: The order will not be posted until the market last price crosses the trigger price according to the condition (GTE or LTE)
 - `tr`: Links this trigger order to another request. When the linked request results in a trade, the trigger activates; when it fails, the trigger is cancelled. If the linked request places an order, this trigger links to that order — activating when it fills, cancelling when it is cancelled.
 - `lp`: Links the trigger order to a position. The trigger is cancelled when the position is closed or inverted.
@@ -388,10 +409,22 @@ Multiple updates may arrive for a single `rq`:
 | 2 | FillOrKill |
 | 4 | ImmediateOrCancel |
 
+**Last execution block (`lb`)**:
+
+- `lb: 0` is legal on **any** order type, not just triggers. The server substitutes the market's maximum window
+- A non-zero `lb` must be `> head`, on every order type — `0 < lb <= head` is rejected with `last exec block already expired`
+- The ceiling is `head + market.order_ttl_blocks` (see the rejection table below for the exact condition)
+- The server also **clamps** `lb` down to that ceiling — you cannot buy a longer validity window than the market allows, and a value that passed admission can still be shortened
+- `order_ttl_blocks` is per-market and subject to change — read it from `/api/v1/pub/context` or `mt: 8` at runtime, never hardcode it
+
 **Example - Open Long**:
 ```typescript
+let sn = 0;                          // Outbound frame counter, never 0
+const ttl = market.order_ttl_blocks; // From /api/v1/pub/context or mt: 8
+
 ws.send(JSON.stringify({
   mt: 22,
+  sn: ++sn,                    // Echoed as `cid` on the mt: 3 status for this frame
   rq: Date.now(),              // Unique request ID
   mkt: 1,                      // BTC market (mainnet)
   acc: accountId,              // Your account ID
@@ -400,7 +433,7 @@ ws.send(JSON.stringify({
   s: 10000,                    // 0.1 BTC (5 decimals)
   fl: 0,                       // GTC
   lv: 1000,                    // 10x leverage
-  lb: currentBlock + 100       // Valid for 100 blocks
+  lb: currentBlock + ttl       // Ceiling: head + order_ttl_blocks
 }));
 ```
 
@@ -409,13 +442,14 @@ ws.send(JSON.stringify({
 - `leverage` within market limits - Check `MarketConfig.initial_margin` (e.g., 1000 = 10% = max 10x)
 - `marketId` is valid - Verify against `/api/v1/pub/context` markets
 - `price > 0` for limit orders, `price = 0` for market (IOC)
-- `lb` should not exceed `head_block_number + market.order_ttl_blocks`
+- `lb` is `0`, or satisfies `head < lb <= head + market.order_ttl_blocks` where `head` is the latest `Heartbeat.h` (see **Last execution block** above)
 - WebSocket is connected - Check `ws.readyState === WebSocket.OPEN`
 
 **Example - Cancel Order**:
 ```typescript
 ws.send(JSON.stringify({
   mt: 22,
+  sn: ++sn,
   rq: Date.now(),
   mkt: 1,
   acc: accountId,
@@ -424,9 +458,60 @@ ws.send(JSON.stringify({
   s: 0,
   fl: 0,
   lv: 0,
-  lb: currentBlock + 100
+  lb: currentBlock + ttl
 }));
 ```
+
+### Command Status (mt: 3)
+
+Every `mt: 22` frame receives **exactly one** `StatusResponse` (`mt: 3`) on the
+`sid: 100` command-status stream. It reports whether the gateway accepted the
+frame — not what happened to the order.
+
+```typescript
+interface StatusResponse {
+  mt: 3;
+  sid: 100;         // Command-status stream
+  sn: number;       // Server-assigned; not contiguous per stream
+  cid?: number;     // The `sn` you sent — omitted entirely when that `sn` was 0
+  status: {
+    code: number;   // 0 = accepted for forwarding; 400 = bad request; 403 = read-scoped key
+    error: string;
+  };
+}
+```
+
+**`code: 0` means accepted for forwarding — not posted, not filled.** The order's
+real outcome arrives later on the `mt: 24` OrdersUpdate stream. A non-zero `code`
+means the gateway rejected the frame before it reached the chain, and **no
+`mt: 24` message will ever follow for it**.
+
+**Correlation**: `cid` echoes the `sn` from your outbound frame, not `rq`, and is
+omitted whenever it would be zero. Set a unique non-zero `sn` on every `mt: 22`
+frame — without one, neither acknowledgements nor rejections can be matched to
+the order that caused them.
+
+**Rejection reasons** (non-zero `code`):
+
+| `error` | Condition | `code` |
+|---|---|---|
+| `order already expired` | `tif > 0 && tif <= head` | 400 |
+| `last exec block already expired` | `lb > 0 && lb <= head` | 400 |
+| `last exec block too high` | `tp == 0 && lb > head + order_ttl_blocks` | 400 |
+| `trigger price condition is not specified` | `tp > 0 && tpc == 0` | 400 |
+| `order type is not provided` / `invalid order type` | invalid `t` | 400 |
+| `api key lacks trade scope` | read-scoped key | 403 |
+
+**Failures that close the connection instead**: an unknown `mkt`, an `acc` not
+owned by the connected wallet, and any frame that fails to parse produce no
+`mt: 3` at all — the server closes with code `1011` (`failed to process`). Do not
+wait on a status that will never arrive; treat an unexpected close as a failure of
+every request still in flight. See
+[WebSocket Close Codes](./README.md#websocket-close-codes).
+
+`mt: 3` reports admission only; everything after arrives on `mt: 24`. Note
+`sr: 14` (`ExceedsLastExecutionBlock`) can be produced without any transaction
+reaching the chain — do not treat it as evidence that a transaction was submitted.
 
 ### Order Updates (mt: 24)
 
@@ -517,7 +602,7 @@ lastSn = heartbeat.sn;
 
 ### Keep-Alive
 
-Send periodic pings to keep connection alive:
+Send periodic pings to keep the trading connection alive:
 
 ```typescript
 setInterval(() => {
@@ -527,6 +612,12 @@ setInterval(() => {
   }));
 }, 30000);
 ```
+
+Application pings count toward the request budget on both servers. At 30s that is
+2/min — negligible against the trading budget, but 20% of the market-data budget.
+**Market-data connections do not need `mt: 1` at all**: data arrives every block and
+the server keeps the socket alive at the protocol level. Reserve the budget for
+subscriptions. See [Rate Limits](./README.md#rate-limits).
 
 ### Error Handling
 
