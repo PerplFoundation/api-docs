@@ -330,8 +330,13 @@ interface OrderRequest {
   lp?: number;         // Linked position ID
   lv: number;          // Leverage (hundredths, e.g., 1000 = 10x)
   lb: number;          // Last execution block: head < lb <= head + market.order_ttl_blocks, or 0
+  bf?: number;         // Builder fee, hundred-thousandths (1 = 0.1 bps) — builder-bound keys only
 }
 ```
+
+`bf` is only valid on a **builder-bound** API key, and only up to the ceiling
+that key was enrolled with; the builder code itself comes from the key, never
+from the request. See [Integrations → Builder codes](./integrations.md#builder-codes).
 
 **Delivery Semantics & Idempotency**:
 
@@ -500,6 +505,7 @@ the order that caused them.
 | `last exec block too high` | `tp == 0 && lb > head + order_ttl_blocks` | 400 |
 | `trigger price condition is not specified` | `tp > 0 && tpc == 0` | 400 |
 | `order type is not provided` / `invalid order type` | invalid `t` | 400 |
+| `builder fee not permitted for this api key` | `bf` above the key's ceiling, or any `bf` on a non-builder key | 400 |
 | `api key lacks trade scope` | read-scoped key | 403 |
 
 **Failures that close the connection instead**: an unknown `mkt`, an `acc` not
@@ -554,12 +560,18 @@ interface Account {
   id: number;       // Account ID
   fr: boolean;      // Is frozen
   fw: boolean;      // Allows forwarding
+  ft: number;       // Fee tier — indexes the market's maker_fees / taker_fees arrays
   lfr: number;      // Last forwarded request ID (use to seed `rq` generation)
   b: string;        // Balance
   lb: string;       // Locked balance
   h?: AccountEvent[];  // Recent events
 }
 ```
+
+An `mt: 21` update is how a **fee-tier change** reaches you: the tier is
+reassigned in the background from trading volume, so re-read `ft` on every
+account update rather than caching it from the snapshot. See
+[Fees & fee tiers](./README.md#fees--fee-tiers).
 
 ### Account Stats (mt: 28)
 
