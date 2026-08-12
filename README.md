@@ -104,7 +104,7 @@ console.log(await response.json());
 | Document | Description |
 |----------|-------------|
 | [Authentication](./authentication.md) | Signing requests with an API key |
-| [Integrations](./integrations.md) | API key enrollment for third-party services |
+| [Integrations](./integrations.md) | API key enrollment for third-party services, and builder codes |
 | [REST Endpoints](./rest-endpoints.md) | All HTTP endpoints |
 | [WebSocket](./websocket.md) | Real-time streams and trading |
 | [Types](./types.md) | Data type reference |
@@ -164,6 +164,67 @@ Market IDs differ between networks:
 | 48 | SOL |
 | 64 | MON |
 | 256 | ZEC |
+
+## Fees & fee tiers
+
+Trading fees are **per market** and **per fee tier**. Two things determine the
+rate on a fill: the market's fee schedule (`MarketConfig`) and the account's own
+fee tier (`Account.ft`).
+
+Fees are charged only on the size that **opens or increases** a position —
+closing or reducing is fee-free. Whether the maker or taker rate applies is
+decided at match time and reported per fill (`Fill.l`: 1 = maker, 2 = taker).
+
+### Reading the rate
+
+`MarketConfig` carries the whole schedule, in **micros** (`10^-6` fractions;
+`1000` = 0.1% = 10 bps):
+
+```typescript
+maker_fee: Micros;      // base tier, equals maker_fees[0]
+taker_fee: Micros;      // base tier, equals taker_fees[0]
+maker_fees?: Micros[];  // one entry per fee tier, index 0 = base
+taker_fees?: Micros[];  // one entry per fee tier, index 0 = base
+```
+
+`Account.ft` is that account's tier — an **index into those arrays**, where `0`
+is the base rate and higher tiers are progressively discounted. Together they let
+you compute your own effective rate without any extra endpoint:
+
+```typescript
+// market: from /api/v1/pub/context or the market-config stream (mt: 8)
+// account: from the WalletSnapshot (mt: 19) or an account update (mt: 21)
+function feeMicros(market: Market, account: Account, isMaker: boolean): number {
+  const tiers = isMaker ? market.config.maker_fees : market.config.taker_fees;
+  const base  = isMaker ? market.config.maker_fee  : market.config.taker_fee;
+  // The arrays are omitted until the schedule has been indexed — fall back to base.
+  return tiers?.[account.ft] ?? base;
+}
+
+// Fee on a fill that opens/increases a position, in collateral units:
+//   fee = notional * feeMicros / 1_000_000
+```
+
+The arrays are `omitempty`: treat a missing array as "base tier only" rather than
+as an error, and range-check `ft` against the array length before indexing.
+
+### How a tier is assigned
+
+- Tiers are earned from **rolling 14-day trading volume**, re-evaluated
+  periodically in the background — not per order. Published thresholds are at
+  [docs.perpl.xyz/exchange/fees](https://docs.perpl.xyz/exchange/fees).
+- A change reaches you as an ordinary **account update** (`mt: 21`) with a new
+  `ft`. Re-read it from every update instead of caching the snapshot value; it is
+  resolved on-chain at fill time, so a stale local copy only affects your own
+  cost estimates.
+
+### What you are charged, as reported
+
+Fee amounts on `Order` (`mt: 24`), `Fill` (`mt: 25`) and `AccountEvent` are
+**gross**: `f` is the total paid, protocol fee **plus** any builder fee, with the
+builder portion broken out as `bfa` (and lifetime as `tbf` inside `tf` on
+`AccountStats`). Never add `f` and `bfa` together. See
+[Integrations → Builder codes](./integrations.md#builder-codes).
 
 ## Rate Limits
 

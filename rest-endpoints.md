@@ -24,6 +24,9 @@ interface Context {
 }
 ```
 
+Each market's `config` carries the full per-tier fee schedule
+(`maker_fees` / `taker_fees`) — see [Fees & fee tiers](./README.md#fees--fee-tiers).
+
 **Example**:
 ```bash
 # Using default live URL
@@ -195,7 +198,8 @@ interface AccountEvent {
   a: string;                // Amount change
   b: string;                // Updated balance
   lb: string;               // Locked balance
-  f: string;                // Fee
+  f: string;                // Fee (gross: protocol fee + `bfa`)
+  bfa?: string;             // Builder-fee portion of `f`, omitted when zero
 }
 ```
 
@@ -240,9 +244,13 @@ interface Fill {
   l: LiquiditySide; // Maker=1, Taker=2
   p?: number;       // Fill price (scaled)
   s: number;        // Filled size (scaled)
-  f: string;        // Fee/rebate
+  f: string;        // Fee/rebate (gross: protocol fee + `bfa`)
+  bfa?: string;     // Builder-fee portion of `f`, omitted when zero
 }
 ```
+
+The rate behind `f` is the market's maker or taker fee at the account's fee tier
+— see [Fees & fee tiers](./README.md#fees--fee-tiers).
 
 ---
 

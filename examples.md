@@ -41,7 +41,10 @@ The UI walks you through the wallet-signed enrollment and hands you the private
 key (`privateKey`, Ed25519) plus the `API_KEY` token (`X-API-Key`). Third-party
 integrations can also enroll keys programmatically — see
 [Integrations](./integrations.md); a runnable JS enrollment example lives at
-`examples/js/enroll_api_key.js`.
+`examples/js/enroll_api_key.js`. That example enrolls a **builder-bound** key
+when `PERPL_BUILDER_ID` (and optionally `PERPL_MAX_BUILDER_FEE_PER_100K`) is set
+— see [Builder codes](./integrations.md#builder-codes) for what those mean and
+how to charge the fee with `bf` on an order.
 
 The runnable example programs read an already-enrolled key from the environment:
 

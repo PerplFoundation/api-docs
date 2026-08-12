@@ -29,6 +29,23 @@ const API_KEY_ENROLL_URL = '/v1/api-key/enroll';
 // API key scope bitmask: 1 = read, 2 = trade (implies read), 3 = both.
 const SCOPE_MASK = 3;
 
+// Builder codes (optional) — set these only if Perpl has registered a builder
+// code for you. BUILDER_ID binds the key to that code; MAX_BUILDER_FEE is the
+// per-order fee ceiling the user authorizes, in hundred-thousandths:
+//
+// | `per_100k` | bps | percent |
+// |------------|-----|---------|
+// |        `1` | 0.1 |  0.001% |
+// |       `10` |   1 |   0.01% |
+// |      `100` |  10 |    0.1% |
+// |     `1000` | 100 |      1% |
+//
+// Both are frozen at enrollment and covered by the
+// wallet signature, and the user sees them spelled out in the wallet prompt.
+// See ../../integrations.md#builder-codes.
+const BUILDER_ID = Number(process.env.PERPL_BUILDER_ID) || 0;
+const MAX_BUILDER_FEE = Number(process.env.PERPL_MAX_BUILDER_FEE_PER_100K) || 0;
+
 
 const WALLET_KEY = process.env.OWNER_PRIVATE_KEY || '0xYourWalletPrivateKey';
 const WALLET_ADDRESS = process.env.WALLET_ADDRESS || new ethers.Wallet(WALLET_KEY).address;
@@ -53,6 +70,11 @@ async function enrollApiKey(apiUrl, chainId, origin, walletAddress, walletKey) {
             public_key: publicKeyHex,
             scope_mask: SCOPE_MASK,
             label: 'example key',
+            // Omitted entirely for an ordinary (non-builder) key.
+            ...(BUILDER_ID ? {
+                builder_id: BUILDER_ID,
+                max_builder_fee_per_100k: MAX_BUILDER_FEE,
+            } : {}),
         }),
     });
     const { typed_data, mac } = await payloadRes.json();
@@ -83,6 +105,14 @@ async function enrollApiKey(apiUrl, chainId, origin, walletAddress, walletKey) {
     });
     const enrollResponse = await enrollRes.json();
     const token = enrollResponse.api_key.api_key;
+    // A builder-bound key echoes the registered terms back (builder_id,
+    // builder_name, max_builder_fee_per_100k, max_builder_fee_pct) — check them
+    // against what you asked for.
+    if (enrollResponse.api_key.builder_id) {
+        console.log(`Builder ${enrollResponse.api_key.builder_name} `
+            + `(#${enrollResponse.api_key.builder_id}), `
+            + `fee ceiling ${enrollResponse.api_key.max_builder_fee_pct}`);
+    }
     return { token, privateKey };
 }
 

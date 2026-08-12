@@ -202,11 +202,18 @@ interface MarketConfig {
   min_settle_amount: Amount;
   initial_margin: Fraction;       // e.g., 1000 = 10% (10x max)
   maintenance_margin: Fraction;   // e.g., 2000 = 5%
-  maker_fee: Micros;              // Negative = rebate
-  taker_fee: Micros;
+  maker_fee: Micros;              // Base-tier maker fee; equals maker_fees[0]
+  taker_fee: Micros;              // Base-tier taker fee; equals taker_fees[0]
+  maker_fees?: Micros[];          // Maker fee per fee tier, indexed by Account.ft
+  taker_fees?: Micros[];          // Taker fee per fee tier, indexed by Account.ft
   recycle_fee: Amount;
+  funding_sum_scaling_exp: number;
 }
 ```
+
+Fee rates are in **micros** (`10^-6` fractions): `1000` = 0.1% = 10 bps. See
+[Fees & fee tiers](./README.md#fees--fee-tiers) for how to pick the right entry
+and compute what an order costs.
 
 ### MarketState
 
@@ -266,7 +273,8 @@ interface Order {
   os: Size;                 // Original size
   fp: Price;                // Fill price (weighted avg)
   fs: Size;                 // Filled size
-  f: Amount;                // Fee paid
+  f: Amount;                // Fee paid (gross: protocol fee + `bfa`)
+  bfa?: Amount;             // Builder-fee portion of `f`, omitted when zero
   tif?: number;             // Time-in-force block
   fl: OrderFlags;
   tp?: Price;               // Trigger price
@@ -413,9 +421,14 @@ interface Fill {
   l: LiquiditySide;   // 1=Maker, 2=Taker
   p?: Price;          // Fill price
   s: Size;            // Filled size
-  f: Amount;          // Fee (negative = rebate)
+  f: Amount;          // Fee (negative = rebate); gross: protocol fee + `bfa`
+  bfa?: Amount;       // Builder-fee portion of `f`, omitted when zero
 }
 ```
+
+`bfa` is non-zero only for fills of orders placed with a builder-bound API key
+that requested a fee, and only on the size that opens or increases a position —
+see [Integrations → Builder codes](./integrations.md#builder-codes).
 
 ### LiquiditySide
 
@@ -518,6 +531,7 @@ interface Account {
   id: AccountID;
   fr: boolean;      // Is frozen
   fw: boolean;      // Allows forwarding
+  ft: number;       // Fee tier (uint8) — indexes MarketConfig.maker_fees / taker_fees
   lfr: RequestID;   // Last forwarded request ID (use to seed `rq` generation)
   b: Amount;        // Balance
   lb: Amount;       // Locked balance
@@ -540,7 +554,8 @@ interface AccountEvent {
   a: Amount;        // Amount change
   b: Amount;        // Updated balance
   lb: Amount;       // Locked balance
-  f: Amount;        // Fee
+  f: Amount;        // Fee (gross: protocol fee + `bfa`), included in `a`
+  bfa?: Amount;     // Builder-fee portion of `f`, omitted when zero
 }
 ```
 
@@ -572,7 +587,9 @@ interface AccountStats {
   td: Amount;    // Total deposits (collateral token)
   tw: Amount;    // Total withdrawals (collateral token)
   tv: Amount;    // Total trading volume
-  trp: Amount;   // Total realized PnL
+  tf: Amount;    // Total fees paid, including `tbf` — the full trading cost
+  tbf?: Amount;  // Builder-fee portion of `tf`, omitted when zero
+  trp: Amount;   // Total realized PnL (net of all fees, protocol and builder)
   wr: number;    // Total win rate (bps)
   tt: number;    // Total trades
 }
@@ -675,6 +692,10 @@ interface ApiKeyPayloadRequest {
   expires_at?: number;         // Timestamp (ms), 0 = none
   ip_cidrs?: string[];
   target_profile?: string;     // Target delegated account, if applicable
+
+  // Builder codes only (see Integrations → Builder codes)
+  builder_id?: number;               // registered builder code, 1..255
+  max_builder_fee_per_100k?: number; // per-order fee ceiling, 1 = 0.1 bps
 }
 ```
 
@@ -718,6 +739,13 @@ interface ApiKeyInfo {
   expires_at: number;          // Timestamp (ms), 0 = none
   last_used_at: number;        // Timestamp (ms), 0 = never
   created_at: number;          // Timestamp (ms)
+
+  // Builder terms, present only on a builder-bound key
+  builder_id?: number;               // code the key submits under
+  builder_name?: string;             // registered display name; empty if the code is no
+                                     // longer registered — display `builder_id` instead
+  max_builder_fee_per_100k?: number; // enrolled ceiling, 1 = 0.1 bps
+  max_builder_fee_pct?: string;      // the same ceiling formatted, e.g. "0.100%"
 }
 ```
 
