@@ -96,6 +96,128 @@ TO=$(($(date +%s) * 1000))
 curl "${API_URL}/v1/market-data/1/candles/3600/${FROM}-${TO}"
 ```
 
+A market with no candles yet returns an empty `d`.
+
+---
+
+### GET /api/v1/market-data/:market_id/funding/:from-:to
+
+Returns the funding events of a market, oldest first — one per funding interval the
+market had a rate set for. An interval whose rate was never set is absent from the
+series.
+
+**Authentication**: None
+
+**URL Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| market_id | number | Market ID (e.g., 1 for BTC on mainnet) |
+| from | number | Start timestamp (ms), inclusive |
+| to | number | End timestamp (ms), inclusive |
+
+`from` and `to` are matched against the timestamp each event **applies** at (`at.t`
+of the event, see below), not the timestamp it was published at.
+
+**Limits**:
+- The period may cover at most **1024 funding intervals** of the market. The interval
+  is `funding_interval_sec` of the market configuration (`GET /v1/pub/context`), so
+  longer history is retrieved in several requests.
+
+**Response**:
+```typescript
+interface FundingSeries {
+  mt: number;           // Message type
+  at: BlockTimestamp;   // Block/timestamp of the most recent event in the series
+  m: number;            // Market ID
+  d: FundingEvent[];    // Funding events, oldest first
+}
+```
+
+`FundingEvent` is the same type the `funding@<chain_id>` WebSocket stream and
+`GET /v1/pub/context` report — see **[Types](./types.md#fundingevent)**.
+
+Two behaviours to plan for:
+
+- **At least one event** is returned whenever the market has any funding history, even
+  if the requested period contains none of its own: a period shorter than the funding
+  interval resolves to the rate that was in force over it. A market with no funding
+  history at all returns an empty `d`.
+- The **most recent event** may carry an estimated `at.t` (see below), which is
+  corrected within about a minute.
+
+**Example**:
+```bash
+# Get BTC funding history for the last 24 hours
+API_URL=${PERPL_API_URL:-https://app.perpl.xyz/api}
+FROM=$(($(date +%s) * 1000 - 86400000))
+TO=$(($(date +%s) * 1000))
+curl "${API_URL}/v1/market-data/1/funding/${FROM}-${TO}"
+```
+
+For every market in one request, see below.
+
+---
+
+### GET /api/v1/market-data/funding/:from-:to
+
+Returns the funding events of **all markets** applied within the requested period,
+keyed by market ID — the same data the per-market endpoint above serves, for the
+whole exchange in one request.
+
+**Authentication**: None
+
+**URL Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| from | number | Start timestamp (ms), inclusive |
+| to | number | End timestamp (ms), inclusive |
+
+`from` and `to` are matched against the timestamp each event **applies** at, exactly
+as for a single market.
+
+**Limits**:
+- The period may cover at most **128 funding intervals of the market with the
+  shortest interval** — an order of magnitude below the single-market cap, because
+  the response carries that many events for every market at once. Markets may be configured with
+  different `funding_interval_sec`, and the cap is applied so that no single market
+  can overrun it, so longer history is retrieved in several requests stepping by the
+  shortest interval of the markets in `GET /v1/pub/context`. Deep history of one
+  market is cheaper to page over the per-market endpoint, which allows 1024.
+- `to` may run up to the **longest** funding interval past the current time, so the
+  most recent event of every market is reachable — a funding event is timestamped
+  ahead of the chain, as above.
+
+**Response**:
+```typescript
+interface MarketFundingSeries {
+  mt: number;           // Message type
+  at: BlockTimestamp;   // Block/timestamp of the most recent event across all markets
+  d: { [market_id: number]: FundingEvent[] };  // Events per market, oldest first
+}
+```
+
+`FundingEvent` is the same type the per-market endpoint, the `funding@<chain_id>`
+WebSocket stream and `GET /v1/pub/context` report — see
+**[Types](./types.md#fundingevent)**.
+
+Behaviours to plan for, on top of the per-market ones above:
+
+- Each market's series is resolved **against its own history**, so a period shorter
+  than a market's funding interval still resolves to the rate that was in force over
+  it. One request can therefore return a different number of events per market.
+- A market with **no funding history at all is absent** from `d` rather than present
+  with an empty array, as are markets not listed in `GET /v1/pub/context`. Do not
+  assume a key exists for every market.
+
+**Example**:
+```bash
+# Get the funding history of every market for the last 24 hours
+API_URL=${PERPL_API_URL:-https://app.perpl.xyz/api}
+FROM=$(($(date +%s) * 1000 - 86400000))
+TO=$(($(date +%s) * 1000))
+curl "${API_URL}/v1/market-data/funding/${FROM}-${TO}"
+```
+
 ---
 
 ## API Keys

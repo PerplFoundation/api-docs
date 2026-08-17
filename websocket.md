@@ -78,7 +78,7 @@ const ws = new WebSocket(`${WS_URL}/ws/v1/market-data`);
 | gas-stats | `gas-stats@<chain_id>` | Gas price updates |
 | market-config | `market-config@<chain_id>` | Market configuration |
 | market-state | `market-state@<chain_id>` | Prices, volume, OI |
-| funding | `funding@<chain_id>` | Funding rate updates |
+| funding | `funding@<chain_id>` | Funding rate updates (see [FundingEvent](./types.md#fundingevent): two messages per interval, keyed by `feb`) |
 | candles | `candles@<market_id>*<resolution>` | OHLCV candles |
 | order-book | `order-book@<market_id>` | L2 order book |
 | trades | `trades@<market_id>` | Recent trades |
@@ -637,6 +637,13 @@ subscriptions. See [Rate Limits](./README.md#rate-limits).
 Reconnect and re-send a fresh signed `ApiKeySignIn` frame
   (new `timestamp` + `nonce`, re-signed) as the first message
 
+**Close Code 1013**: The client fell behind — its send buffer stayed full for the
+whole server I/O timeout and the connection was dropped. Reconnect after a pause and
+read frames off the socket into your own queue instead of processing them inline;
+resubscribing to the same firehose without that change reproduces it.
+
+See [WebSocket Close Codes](./README.md#websocket-close-codes) for the full list.
+
 ```typescript
 function handleClose(event) {
   if (event.code === 3401) {
@@ -644,7 +651,8 @@ function handleClose(event) {
     // signed ApiKeySignIn frame (new timestamp + nonce) as the first message.
     reconnect();
   } else {
-    // Normal close — reconnect with backoff (applied by reconnect()).
+    // Everything else, 1013 (too slow) included — reconnect with backoff
+    // (applied by reconnect()).
     reconnect();
   }
 }

@@ -149,6 +149,74 @@ async function getCandles(
 const btcCandles = await getCandles(MARKETS.BTC, 3600, 24); // 1h candles, 24 hours
 ```
 
+### Get Funding History
+
+```typescript
+async function getFundingHistory(marketId: number, hours: number = 24) {
+  const to = Date.now();
+  const from = to - (hours * 60 * 60 * 1000);
+
+  const res = await fetch(
+    `${API_URL}/v1/market-data/${marketId}/funding/${from}-${to}`
+  );
+  const data = await res.json();
+
+  // Get market config for scaling
+  const context = await getContext();
+  const market = context.markets.get(marketId);
+  const priceScale = Math.pow(10, market.config.price_decimals);
+
+  // `at.t` is when the rate applies, not when it was published, so it is the
+  // series' time axis. Events are keyed by `feb` (the funding interval): a repeat
+  // of one already seen updates that entry rather than adding a point.
+  return data.d.map(f => ({
+    time: f.at.t,
+    interval: f.feb,
+    ratePct: f.rate / 10_000,          // micros -> percent
+    indexPrice: f.idx / priceScale,
+    paymentPerLot: f.ppl / priceScale
+  }));
+}
+
+// Usage
+const btcFunding = await getFundingHistory(MARKETS.BTC, 24 * 7); // last week
+```
+
+### Get Funding History of All Markets
+
+```typescript
+async function getAllFundingHistory(hours: number = 24) {
+  const to = Date.now();
+  const from = to - (hours * 60 * 60 * 1000);
+
+  const res = await fetch(`${API_URL}/v1/market-data/funding/${from}-${to}`);
+  const data = await res.json();
+
+  // Get market configs for scaling
+  const context = await getContext();
+
+  // `d` is keyed by market ID; a market with no funding history is absent from
+  // it, and the number of events per market follows each market's own funding
+  // interval
+  return new Map(Object.entries(data.d).map(([marketId, events]) => {
+    const market = context.markets.get(Number(marketId));
+    const priceScale = Math.pow(10, market.config.price_decimals);
+
+    return [Number(marketId), events.map(f => ({
+      time: f.at.t,
+      interval: f.feb,
+      ratePct: f.rate / 10_000,          // micros -> percent
+      indexPrice: f.idx / priceScale,
+      paymentPerLot: f.ppl / priceScale
+    }))];
+  }));
+}
+
+// Usage: the period is capped at 128 intervals of the market funded most often
+const funding = await getAllFundingHistory(24);
+const btcFundingToday = funding.get(MARKETS.BTC);
+```
+
 ---
 
 ## Market Data WebSocket
