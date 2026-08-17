@@ -316,11 +316,23 @@ async function fetchWithRetry(url: string, options: RequestInit, maxRetries = 3)
 | 1008 | `ping timeout` | No response to the server's ping |
 | 1008 | `idle timeout` | No frame received within the idle window (5s mainnet, 10s testnet). Applies to the initial sign-in frame too |
 | 1011 | `failed to process` | Unknown market, an account not owned by the connected wallet, or an unparseable frame |
-| 3401 | — | Authentication failure |
+| 1013 | `send buffer overflow` | The client is not reading fast enough: its send buffer stayed full for the whole server I/O timeout. Retry after a pause, and consume messages faster (see below) |
+| 1001 | — | Server going away — the instance is shutting down. Reconnect immediately, no back-off needed |
+| 3401 | `unauthorized` | Authentication failure |
+
+`1013` is back-pressure, not a rejection of anything you sent: the socket is closed
+because the server could not hand off messages destined for the client. It is
+reached either by falling behind on a busy stream, or by pipelining requests faster
+than the replies are read. Read frames off the socket promptly into your own queue
+rather than processing them inline, and subscribe only to the streams you consume.
 
 A close carries no per-request status. Any request in flight when the socket closes
 is lost silently — reconcile against `mt: 24` / snapshots after reconnecting, do
 not assume it was dropped.
+
+A close code of `1006` (abnormal closure, no close frame) is never sent by the
+server: it means the connection was lost at the network level, or the close frame
+could not be delivered. Treat it as a transient failure and reconnect with back-off.
 
 ## Endpoint Authentication
 
@@ -332,6 +344,8 @@ These endpoints work without authentication:
 |----------|-------------|
 | `GET /api/v1/pub/context` | Chain and market configuration |
 | `GET /api/v1/market-data/.../candles/...` | OHLCV candlestick data |
+| `GET /api/v1/market-data/.../funding/...` | Funding rate history of one market |
+| `GET /api/v1/market-data/funding/...` | Funding rate history of all markets |
 | `GET /api/v1/profile/announcements` | Public announcements |
 | `wss://.../ws/v1/market-data` | Real-time market data streams |
 

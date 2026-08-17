@@ -238,8 +238,8 @@ interface MarketState {
 
 ```typescript
 interface FundingEvent {
-  at: BlockTimestamp;
-  feb: number;    // Funding event block
+  at: BlockTimestamp;  // Block/timestamp the rate is applied at (same block as `feb`)
+  feb: number;    // Funding event block, same as `at.b`
   rate: Micros;   // Funding rate (10^-6)
   idx: Price;     // Index price
   ppl: SPrice;    // Payment per lot
@@ -247,6 +247,19 @@ interface FundingEvent {
   div: number;    // Scaling divider of the funding sum
 }
 ```
+
+`at` is the point in time the rate **applies** at, not the one the event was published
+at. The exchange requires a funding rate to be set shortly *before* the block it
+applies to, so:
+
+- `at` runs slightly ahead of the chain head (under a minute) for the newest event,
+  and events sit on a regular grid one funding interval apart.
+- Until the block it applies at is reached, `at.t` of the newest event is an estimate.
+  The event is republished with the exact timestamp once that block arrives, so a
+  funding interval produces **two** messages on the `funding@<chain_id>` stream: the
+  rate, then the same rate with its final timestamp. Both carry the same `feb`, which
+  identifies the interval — treat a repeat of a known `feb` as an update, not a new
+  funding event.
 
 ---
 
