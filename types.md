@@ -280,6 +280,7 @@ interface Order {
   scid: OrderID;            // Smart contract order ID
   st: OrderStatus;
   sr: OrderStatusReason;
+  fr?: OrderFailureReason;  // Detail behind `sr` on a post/settlement failure, omitted otherwise
   t: OrderType;
   r?: boolean;              // Remove from open orders
   p?: Price;                // Limit price (0 = market)
@@ -419,6 +420,31 @@ interface Order {
 | 66 | TriggeredOrderPartiallyFilled |
 | 67 | TriggeredOrderExpired |
 | 68 | TriggeredOrderRecoverableFailure |
+| 69 | OrderExtensionRejected |
+
+### OrderFailureReason
+
+Present as `fr` on order events whose `sr` is `OrderPostFailed` (36),
+`MakerOrderSettlementFailed` (23) or `TakerOrderSettlementFailed` (44). Those
+three say *where* the order failed — posting, or settlement as maker or taker —
+and `fr` says *why* the exchange refused it. Omitted on every other event, and
+on order snapshots (which carry no `sr` either).
+
+| Value | Name | Meaning |
+|-------|------|---------|
+| 0 | Unspecified | The order did not fail, or failed before the exchange evaluated it |
+| 1 | InsufficientBalance | Account balance is below the collateral, negative-PnL collateral and fee the new position requires |
+| 2 | InsufficientCollateralIncrease | Available collateral is below what increasing the existing position requires |
+| 3 | InsufficientCollateralInvert | Available collateral is below what inverting the existing position requires |
+| 4 | NoPositionToClose | A close order was evaluated against a position that does not exist |
+| 5 | PerpetualSolvency | Settling at this price would leave the perpetual insolvent |
+| 6 | NegativePositionValue | Closing or decreasing the position would realise a negative position value |
+| 7 | ReferencePriceStale | No fresh reference price was available to value the order against |
+| 8 | ExceedsMaxNegPnlCollat | The negative PnL the order would have to collateralize against the mark price exceeds the `maxNegPnlCollatBPS` limit the order was placed with |
+| 9 | Other | The order failed for a reason this API version does not publish yet |
+
+`5` (PerpetualSolvency) only ever accompanies a settlement failure: an order is
+allowed to rest on the book in that state, so it is never a posting failure.
 
 ---
 
