@@ -531,6 +531,11 @@ interface WalletOrders {
 
 Orders with `r: true` should be removed from open orders.
 
+An order the exchange refused to post or settle carries `fr` next to `sr`, giving
+the reason behind the refusal — insufficient collateral, a stale reference price,
+and so on. See [OrderFailureReason](./types.md#orderfailurereason). It is omitted
+on every event that is not such a failure.
+
 ### Fill Updates (mt: 25)
 
 ```typescript
