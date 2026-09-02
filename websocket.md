@@ -309,6 +309,13 @@ The **WalletSnapshot** includes a sequence number (`sn` from `MessageHeader`) th
 
 ### Placing Orders
 
+> **Prerequisite**: order forwarding — "One-Click Trading" — must be enabled for the
+> account (`Account.fw == true`), otherwise every order is rejected immediately with
+> `st: 7` / `sr: 34` (`OrderForwardingNotAllowed`) and no transaction reaches the chain.
+> It is off on a newly created account and is granted by calling `allowOrderForwarding(true)`
+> on the Exchange contract from the account's own wallet. See
+> [Enabling Order Forwarding (One-Click Trading)](./README.md#enabling-order-forwarding-one-click-trading).
+
 ```typescript
 interface OrderRequest {
   mt: 22;
@@ -322,6 +329,7 @@ interface OrderRequest {
   s: number;           // Size (scaled)
   a?: string;          // Amount (for collateral increase)
   ms?: number;         // Maximum market order price slippage, bps
+  mnp?: number;        // Maximum negative PnL to collateralize on a fill, bps of the resulting position notional
   tif?: number;        // Time-in-force block - The last block number on the Monad chain where this order is valid
   fl: OrderFlags;      // Flags (PostOnly, FOK, IOC)
   tp?: number;         // Trigger price (stop/TP orders)
@@ -422,6 +430,113 @@ Multiple updates may arrive for a single `rq`:
 - The server also **clamps** `lb` down to that ceiling — you cannot buy a longer validity window than the market allows, and a value that passed admission can still be shortened
 - `order_ttl_blocks` is per-market and subject to change — read it from `/api/v1/pub/context` or `mt: 8` at runtime, never hardcode it
 
+**Negative PnL collateralization (`mnp`)**:
+
+Filling an order can require collateralizing the **unrealized negative PnL** of the
+position it results in — the loss that position already carries against the mark
+price. `mnp` is your upper bound on that, in basis points of the resulting
+position's notional. A match that would need more is not filled: the order comes
+back on `mt: 24` with `fr: 8` (`ExceedsMaxNegPnlCollat`).
+
+- The limit is measured against the **whole resulting position**, not against this
+  order's own size. Adding 0.5 BTC at $100,000 to an existing 2.0 BTC position gives
+  a notional of $250,000, so `mnp: 1000` (10%) allows $25,000 of negative PnL to be
+  collateralized — not 10% of the $50,000 the order itself is worth.
+- Values **above `10000` are meaningful**, not errors: `10000` is 100% of the
+  notional, `30000` is three times it. At the `65535` ceiling roughly 6.5x the
+  position's notional can be taken from the account as collateral to fill one match
+  — size the value deliberately rather than defaulting it upward.
+- **Omitting `mnp` is not the same as sending `0`.** Omit the field to take the
+  market default, `order_max_neg_pnl_collat_bps` from `/api/v1/pub/context`. Send an
+  explicit `0` to refuse any fill that would collateralize negative PnL at all.
+- Range is `0..65535`; a larger value is rejected with `code: 400` (see the
+  rejection table below). `mnp` is an unsigned field — a negative number is not a
+  range error but an unparseable frame, and closes the connection with `1011`.
+- The check only runs on a fill that **creates, increases or inverts** a position.
+  A purely reducing fill — a `CloseLong`/`CloseShort`, or an opposing `Open*` that
+  only shrinks the position — never collateralizes negative PnL, so it can never
+  come back with `fr: 8` regardless of `mnp`. Reducing **realizes** PnL on the closed
+  portion at the fill price instead: it is paid out or collected there and then, and
+  the exposure it belonged to is gone, so there is nothing left to pre-fund against
+  the mark price. `Close*` orders are reduce-only and are clamped to the position
+  size, so they can never fall through to the inverting case. A reducing fill has its
+  own failure modes — `fr: 6` (NegativePositionValue) and `fr: 5`
+  (PerpetualSolvency) — but not `fr: 8`.
+- `order_max_neg_pnl_collat_bps` is per-market and subject to change — read it from
+  `/api/v1/pub/context` at runtime rather than hardcoding it. It is not carried on
+  the `mt: 8` market-config stream, which publishes `MarketConfig` only.
+
+*As taker*
+
+The order is one settlement against the size-weighted average of its fills, so
+there is one verdict for the whole order:
+
+- The price used is the average fill price — `Σ(price × size) / Σ(size)` over every
+  match — rounded in the direction that widens the allowance slightly, so the
+  effective limit can be marginally above the exact arithmetic.
+- Exceeding the limit fails the **entire** order: nothing is filled — the whole
+  settlement is unwound, including every match it had already made — and you get one
+  `mt: 24` with `st: 7` (Failed), `sr: 44` (`TakerOrderSettlementFailed`) and
+  `fr: 8`. There is no partial fill up to the limit.
+
+*As maker*
+
+A resting order is settled **once per match**, against its own price, using the
+`mnp` it was posted with:
+
+- The price used is the resting order's **own limit price**, exactly — there is no
+  averaging and no rounding, because the maker fills at the price it named.
+- The limit read is the one **stored on the resting order at post time**. The
+  taker's `mnp` has no bearing on the maker's side of the fill, and vice versa: each
+  side is checked against its own value.
+- The check is evaluated **at fill time against the current mark price**, while the
+  price the order is valued at was fixed when it was posted. A resting order is
+  therefore far more exposed to this rejection than a taker: the longer it waits and
+  the further the mark price drifts away from its limit price, the larger the
+  negative PnL a fill would have to collateralize. An `mnp` that was comfortable at
+  post time can be exceeded by the time the order is hit.
+- Exceeding the limit **removes the whole resting order from the book**, not just the
+  matched portion. The remaining unfilled size is gone, the order lock is released,
+  and the order-recycling fee paid when it was posted is forfeited to the taker (or
+  to the protocol on a forwarded taker order). You get `mt: 24` with `st: 7`
+  (Failed), `sr: 23` (`MakerOrderSettlementFailed`) and `fr: 8`. Repost if you still
+  want the exposure — there is no partial survivor to amend.
+- The taker that hit you is **not** penalized. Matching skips the cleared order and
+  continues into the next resting order at that price level, so the taker may still
+  fill in full from other inventory.
+- On a **partial** fill that does settle, the remainder stays on the book with the
+  same `mnp`, and each subsequent match is checked again independently.
+
+*Cancel, IncreasePositionCollateral and Change*
+
+`mnp` is recorded when an order is posted and read when that order is matched.
+The three non-matching order types do neither, so they never read it:
+
+- `Cancel` (`t: 5`) removes an order. It has nothing to match and no position to
+  value, so `mnp` is ignored.
+- `IncreasePositionCollateral` (`t: 6`) moves collateral from your account balance
+  into an existing position's deposit. It never matches, so `mnp` is ignored. Note
+  that it does reduce your free account balance, which is what a later fill draws on
+  to collateralize negative PnL — so adding margin this way can make a subsequent
+  fill fail on balance (`fr: 1`/`2`/`3`) rather than on `fr: 8`.
+- `Change` (`t: 7`) amends **price, size and expiry block only**. It **cannot change
+  `mnp`**: an `mnp` sent alongside a change is accepted and validated for range, then
+  ignored, and the resting order keeps the value it was originally posted with. To
+  change the limit, cancel the order and post a new one. This matters when repricing
+  — moving a resting order closer to the mark does not relax the limit it will be
+  filled under.
+
+Sending `mnp` on any of these three is harmless: it is range-checked like every
+other order type (`mnp > 65535` is a `code: 400`) and then discarded.
+
+*Trigger orders*
+
+Trigger orders carry `mnp` too. The value is recorded when the trigger is placed
+and applied to the order the trigger forwards when it fires — which is then subject
+to the taker or maker rules above depending on how that order executes. It is not
+re-read or re-defaulted at fire time, so a trigger placed while the market default
+was one value keeps that value even if the market default changes in between.
+
 **Example - Open Long**:
 ```typescript
 let sn = 0;                          // Outbound frame counter, never 0
@@ -448,6 +563,7 @@ ws.send(JSON.stringify({
 - `marketId` is valid - Verify against `/api/v1/pub/context` markets
 - `price > 0` for limit orders, `price = 0` for market (IOC)
 - `lb` is `0`, or satisfies `head < lb <= head + market.order_ttl_blocks` where `head` is the latest `Heartbeat.h` (see **Last execution block** above)
+- `mnp` is omitted, or `0 <= mnp <= 65535` — send it only when the market default is not what you want (see **Negative PnL collateralization** above)
 - WebSocket is connected - Check `ws.readyState === WebSocket.OPEN`
 
 **Example - Cancel Order**:
@@ -506,6 +622,7 @@ the order that caused them.
 | `trigger price condition is not specified` | `tp > 0 && tpc == 0` | 400 |
 | `order type is not provided` / `invalid order type` | invalid `t` | 400 |
 | `builder fee not permitted for this api key` | `bf` above the key's ceiling, or any `bf` on a non-builder key | 400 |
+| `max negative pnl collateralization out of range` | `mnp > 65535` | 400 |
 | `api key lacks trade scope` | read-scoped key | 403 |
 
 **Failures that close the connection instead**: an unknown `mkt`, an `acc` not
@@ -516,8 +633,9 @@ every request still in flight. See
 [WebSocket Close Codes](./README.md#websocket-close-codes).
 
 `mt: 3` reports admission only; everything after arrives on `mt: 24`. Note
-`sr: 14` (`ExceedsLastExecutionBlock`) can be produced without any transaction
-reaching the chain — do not treat it as evidence that a transaction was submitted.
+`sr: 14` (`ExceedsLastExecutionBlock`) and `sr: 34` (`OrderForwardingNotAllowed`) can be
+produced without any transaction reaching the chain — do not treat them as evidence that
+a transaction was submitted.
 
 ### Order Updates (mt: 24)
 
@@ -564,7 +682,7 @@ interface Account {
   in: number;       // Instance ID
   id: number;       // Account ID
   fr: boolean;      // Is frozen
-  fw: boolean;      // Allows forwarding
+  fw: boolean;      // Allows order forwarding ("One-Click Trading") — orders are rejected while false
   ft: number;       // Fee tier — indexes the market's maker_fees / taker_fees arrays
   lfr: number;      // Last forwarded request ID (use to seed `rq` generation)
   b: string;        // Balance
@@ -577,6 +695,12 @@ An `mt: 21` update is how a **fee-tier change** reaches you: the tier is
 reassigned in the background from trading volume, so re-read `ft` on every
 account update rather than caching it from the snapshot. See
 [Fees & fee tiers](./README.md#fees--fee-tiers).
+
+It is also the only place a **change to `fw`** shows up — there is no on-chain getter
+for the flag and no `AccountEvent` for it, so re-read `fw` on every account update.
+A toggle from any other client of the same wallet lands here, and orders are rejected
+for as long as it is `false`. See
+[Enabling Order Forwarding (One-Click Trading)](./README.md#enabling-order-forwarding-one-click-trading).
 
 ### Account Stats (mt: 28)
 

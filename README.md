@@ -95,8 +95,10 @@ const response = await fetch(`${API_URL}${target}`, {
 console.log(await response.json());
 ```
 
-> **Important**: Successful API authentication does NOT mean you have an exchange account.
-> See [API Auth vs Smart Contract Account](#api-auth-vs-smart-contract-account) below.
+> **Important**: Successful API authentication does NOT mean you have an exchange account,
+> and an exchange account alone does NOT mean you can post orders through this API — order
+> forwarding must also be enabled on-chain. See
+> [API Auth vs Smart Contract Account](#api-auth-vs-smart-contract-account) below.
 > Some calls will return 404 if a Smart Contract Account has not been created.
 
 ## API Reference
@@ -373,12 +375,14 @@ from a private key you supply.
 
 ## API Auth vs Smart Contract Account
 
-**This is a common source of confusion.** API authentication and smart contract account creation are completely separate:
+**This is a common source of confusion.** API authentication, smart contract account
+creation, and the on-chain permission to forward orders are three separate things:
 
 | Concept | What It Means | Required For |
 |---------|---------------|--------------|
 | **API Authentication** | An enrolled API key can call authenticated API endpoints | Reading order history, position history, trading WebSocket |
 | **Exchange Account** | On-chain account exists on Exchange contract with collateral | Placing orders, holding positions, trading |
+| **Order Forwarding** | The account has authorized the exchange to submit orders on its behalf ("one-click trading") | Posting orders on the trading WebSocket (not needed to trade directly on-chain) |
 
 ### Key Points
 
@@ -390,13 +394,25 @@ from a private key you supply.
 2. **Exchange account must be created on-chain**
    - Call `createAccount(uint256 amountCNS)` on the Exchange contract
    - Requires initial collateral deposit (USDC)
-   - This creates your account ID and enables trading
+   - This creates your account ID
 
-3. **Both are required for full functionality**
+3. **Order forwarding must be enabled on-chain to trade via the API**
+   - `createAccount` leaves forwarding **disabled**; a brand-new account cannot post orders
+     through the API
+   - Call `allowOrderForwarding(true)` on the Exchange contract from the account's own wallet
+   - Every order placed through the API is forwarded (submitted and paid for) by the exchange
+     on your behalf — this is the authorization for that, and without it the contract refuses
+     the order
+   - The flag gates only the forwarded path. An account can still trade by sending its own
+     order transactions on-chain; that is out of scope for these docs
+
+4. **All three are required to trade through this API**
    - API auth → Access trading history, real-time data via authenticated endpoints
-   - Exchange account → Actually place orders and hold positions
+   - Exchange account → Hold collateral and positions
+   - Order forwarding → Actually post orders on the trading WebSocket
 
-On the front end, the "Deposit to Enable trading" button takes care of this flow.
+On the front end, the "Deposit to Enable trading" button and the **One-Click Trading**
+toggle in user settings take care of steps 2 and 3.
 
 ### Fetch smart contract information
 
@@ -447,11 +463,69 @@ cast send --from $WALLET_ADDRESS $TOKEN_CONTRACT_ADDRESS "approve(address,uint25
 cast send --from $WALLET_ADDRESS $SMART_CONTRACT_ADDRESS "createAccount(uint256)(uint256)" $MIN_ACCOUNT_OPEN_AMOUNT --private-key $WALLET_KEY --rpc-url $RPC_URL
 ```
 
+### Enabling Order Forwarding (One-Click Trading)
+
+**Order forwarding is what makes API trading possible.** An order placed on the trading
+WebSocket is never sent to the chain by the client: the exchange submits (forwards) the
+transaction on your behalf and pays the gas — gas-less, click-less trading. The Exchange
+contract only accepts forwarded orders for accounts that have explicitly authorized it, so
+this permission is a prerequisite for every order posted through this API, independent of
+API authentication.
+
+It is **not** a prerequisite for trading itself. An account can always transact directly
+on-chain from its own wallet — submitting its own order transactions and paying its own
+gas — and that path is unaffected by the flag. Direct on-chain trading is out of scope for
+these docs; everything below assumes you are posting orders through the API.
+
+A freshly created account has forwarding **disabled** — `createAccount` does not turn it
+on. Grant it by calling `allowOrderForwarding` from the account's own wallet:
+
+```solidity
+/// Sets whether the account permits the exchange Administrator role to forward orders on
+/// its behalf. Enables gas-less, click-less trading.
+function allowOrderForwarding(bool allow) external;
+```
+
+```bash
+export SMART_CONTRACT_ADDRESS=0xSmartContractAddress
+export WALLET_ADDRESS=0xYourWalletAddress
+export WALLET_KEY=0xYourWalletPrivateKey
+
+# Enable order forwarding (pass false to revoke it)
+cast send --from $WALLET_ADDRESS $SMART_CONTRACT_ADDRESS "allowOrderForwarding(bool)" true --private-key $WALLET_KEY --rpc-url $RPC_URL
+```
+
+Notes:
+
+- `msg.sender` must be the wallet that owns the exchange account; the call reverts if no
+  account exists for it, or if the account is frozen.
+- The permission is per-account and persistent — a one-time setup, not per-session. Pass
+  `false` to revoke it; orders already on the book are unaffected, but no new order can be
+  placed through the API until it is granted again.
+- On success the contract emits `OrderForwardingUpdated(accountId, allowed)`.
+- The front end exposes this as the **One-Click Trading** toggle in user settings.
+
+**Checking the current state.** There is no on-chain getter for it —
+`getAccountByAddr` does not return the flag. Read `fw` on the
+[`Account`](./types.md#account) object instead: it arrives in the wallet snapshot
+(`as[]`) and in every account update (`mt: 21`) on the trading WebSocket. Because the flag
+can be toggled from any wallet client at any time, re-read `fw` on each `mt: 21` update
+rather than caching it from the snapshot.
+
+**What a missing permission looks like.** The order is rejected before any transaction
+reaches the chain: the `mt: 22` frame is still acknowledged with `code: 0`, and the
+rejection arrives on the `mt: 24` order stream as `st: 7` (`Failed`) with
+`sr: 34` (`OrderForwardingNotAllowed`). No on-chain order id is assigned. See
+[Command Status](./websocket.md#command-status-mt-3) and
+[OrderStatusReason](./types.md#orderstatusreason).
+
 ### Common Error Scenarios
 
 | Symptom | Cause | Solution |
 |---------|-------|----------|
 | API auth succeeds but `getAccountByAddr` returns `accountId: 0` | Signed requests work but no on-chain account | Create account with `createAccount()` |
 | Can read order history but can't place orders | API works but no exchange account | Create account with `createAccount()` |
+| Orders acknowledged (`code: 0`) then fail with `sr: 34` | Account exists but has not authorized order forwarding | Call `allowOrderForwarding(true)` from the account's wallet |
+| `fw: false` on the account snapshot | Order forwarding disabled or revoked | Call `allowOrderForwarding(true)` from the account's wallet |
 | 401 on signed requests | Bad/stale signature, clock skew, or revoked/expired key | Re-sign with a fresh timestamp + nonce; check key status |
 | 403 on order placement | Key lacks `trade` scope | Enroll a `trade`-scoped key |
