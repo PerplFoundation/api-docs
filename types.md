@@ -183,6 +183,7 @@ interface Market {
   order_ttl_blocks: number;               // lb ceiling offset from head: lb <= head + order_ttl_blocks
   order_retry_blocks: number;
   order_max_market_slippage_bps: number;  // Max market order slippage (bps)
+  order_max_neg_pnl_collat_bps: number;   // Default negative-PnL collateralization limit (bps), used when an order omits `mnp`
   config: MarketConfig;
   state: MarketState;
   funding: FundingEvent;
@@ -440,11 +441,19 @@ on order snapshots (which carry no `sr` either).
 | 5 | PerpetualSolvency | Settling at this price would leave the perpetual insolvent |
 | 6 | NegativePositionValue | Closing or decreasing the position would realise a negative position value |
 | 7 | ReferencePriceStale | No fresh reference price was available to value the order against |
-| 8 | ExceedsMaxNegPnlCollat | The negative PnL the order would have to collateralize against the mark price exceeds the `maxNegPnlCollatBPS` limit the order was placed with |
+| 8 | ExceedsMaxNegPnlCollat | The negative PnL the order would have to collateralize against the mark price exceeds the limit the order was placed with — the `mnp` sent on the request, or the market's `order_max_neg_pnl_collat_bps` if it was omitted. See [Placing Orders](./websocket.md#placing-orders) |
 | 9 | Other | The order failed for a reason this API version does not publish yet |
 
 `5` (PerpetualSolvency) only ever accompanies a settlement failure: an order is
 allowed to rest on the book in that state, so it is never a posting failure.
+
+`8` (ExceedsMaxNegPnlCollat) is also settlement-only, and only on a fill that
+creates, increases or inverts a position — the limit is not evaluated when an order
+is posted, and a purely reducing fill never collateralizes negative PnL. Each side
+of a fill is judged against its own limit: a maker whose limit is exceeded is cleared
+from the book while the taker fills on from other inventory, whereas a taker whose
+limit is exceeded unwinds the whole settlement and fills nothing. See
+[Placing Orders](./websocket.md#placing-orders) for both sides in detail.
 
 ---
 
