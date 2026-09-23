@@ -15,6 +15,7 @@
     "rest": "tsx rest_requests.ts",
     "websocket": "tsx stream_websocket.ts",
     "authed-rest": "tsx authed_rest_requests.ts",
+    "submit-orders": "tsx submit_orders.ts",
     "authed-websocket": "tsx authed_websocket.ts"
   }
 }

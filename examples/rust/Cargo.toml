@@ -12,6 +12,10 @@ name = "authed_rest_requests"
 path = "src/bin/authed_rest_requests.rs"
 
 [[bin]]
+name = "submit_orders"
+path = "src/bin/submit_orders.rs"
+
+[[bin]]
 name = "stream_websocket"
 path = "src/bin/stream_websocket.rs"
 

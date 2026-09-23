@@ -276,8 +276,8 @@ Three things have to line up:
 
 ### Fee units
 
-Builder fees are expressed in **hundred-thousandths** (`per_100k`), the unit the
-on-chain fee schedule uses. `1` = 0.1 bps = 0.001%.
+Builder fees are expressed in **hundred-thousandths** (`per_100k`). `1` = 0.1 bps
+= 0.001%.
 
 > Not the same unit as the market fee rates on the API, which are in **micros**
 > (`10^-6`) — see [Fees & fee tiers](./README.md#fees--fee-tiers). `1 per_100k` =
@@ -290,7 +290,7 @@ on-chain fee schedule uses. `1` = 0.1 bps = 0.001%.
 | `100` | 10 | 0.1% |
 | `1000` | 100 | 1% |
 
-The maximum is `100` (0.1%).
+The maximum a key can be enrolled with is `100` (0.1%).
 
 ### Registering as a builder
 
@@ -397,8 +397,9 @@ ws.send(JSON.stringify({
   attributed to your code, at zero fee — you simply earn nothing on it.
 - **A fee above the ceiling is rejected, not clamped.** Silently reducing it
   would make your accounting disagree with the chain.
-- The fee applies to the size that **opens or increases** a position. Closing or
-  reducing fills carry no builder fee.
+- The fee applies to **every fill that changes the position's size**, closes and
+  reductions included — it follows the account fee. It is charged on the size
+  the fill added or removed.
 - Builder fees only exist on orders routed through the API. Orders a user sends
   directly on-chain cannot be attributed to a builder.
 
