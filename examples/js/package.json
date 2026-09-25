@@ -8,6 +8,7 @@
   "scripts": {
     "enroll": "node enroll_api_key.js",
     "authed-rest": "node authed_rest_requests.js",
+    "submit-orders": "node submit_orders.js",
     "authed-websocket": "node authed_websocket.js"
   }
 }

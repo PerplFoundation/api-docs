@@ -173,9 +173,14 @@ Trading fees are **per market** and **per fee tier**. Two things determine the
 rate on a fill: the market's fee schedule (`MarketConfig`) and the account's own
 fee tier (`Account.ft`).
 
-Fees are charged only on the size that **opens or increases** a position —
-closing or reducing is fee-free. Whether the maker or taker rate applies is
-decided at match time and reported per fill (`Fill.l`: 1 = maker, 2 = taker).
+Fees are charged on **every fill that changes a position's size**, in either
+direction: opening and increasing are charged on the size added, closing and
+reducing on the size removed. A close pays out of its own proceeds rather than
+your free balance, so it can never fail for lack of fee. Whether the maker or
+taker rate applies is decided at match time and reported per fill (`Fill.l`:
+1 = maker, 2 = taker).
+
+Liquidations, deleveraging and unwinds are **not** charged a trading fee.
 
 ### Reading the rate
 
@@ -203,7 +208,9 @@ function feeMicros(market: Market, account: Account, isMaker: boolean): number {
   return tiers?.[account.ft] ?? base;
 }
 
-// Fee on a fill that opens/increases a position, in collateral units:
+// Fee on a fill, in collateral units. Same formula whichever direction the
+// fill moves the position; the notional is the amount (price * size) the fill
+// added or removed:
 //   fee = notional * feeMicros / 1_000_000
 ```
 
@@ -227,6 +234,11 @@ Fee amounts on `Order` (`mt: 24`), `Fill` (`mt: 25`) and `AccountEvent` are
 builder portion broken out as `bfa` (and lifetime as `tbf` inside `tf` on
 `AccountStats`). Never add `f` and `bfa` together. See
 [Integrations → Builder codes](./integrations.md#builder-codes).
+
+Positions report fees differently from trades: `fee` covers the entry side and
+`cfee` the closing side, and what each carries depends on whether you are reading a
+live position or a position event. See
+[Fees on a position](./types.md#fees-on-a-position).
 
 ## Rate Limits
 
@@ -279,6 +291,14 @@ REST requests are rate-limited at the edge. Limits are not published and may
 change without notice — treat HTTP 429 as the signal and back off exponentially
 (example below).
 
+**A batch of orders costs one unit of the allowance per order**, being the work one
+request would have carried. Batching over
+[`POST /v1/trading/orders`](./rest-endpoints.md#post-apiv1tradingorders) saves round
+trips; it does not raise the rate at which orders may be submitted. The allowance is
+charged as the batch is processed, so a batch that outruns it is served up to that
+point and the remaining orders are answered `429` **in their own positions** — the
+request as a whole is still HTTP 200.
+
 ```typescript
 // Handle rate limiting with exponential backoff
 async function fetchWithRetry(url: string, options: RequestInit, maxRetries = 3) {
@@ -308,6 +328,13 @@ async function fetchWithRetry(url: string, options: RequestInit, maxRetries = 3)
 | 404 | Not Found |
 | 429 | Too Many Requests |
 | 500 | Internal Server Error |
+| 503 | Service Unavailable - the service has not caught up with the chain yet. Retryable |
+
+`503` is answered while a service is still warming up: a market's book or state has
+not been received yet, or the order gateway does not know the current exchange block.
+It is temporary and retrying later is expected to succeed — treat it as back-off, not
+as a failed request. It is also a `Status` code in its own right on the WebSocket and
+batch-order responses, not only an HTTP status.
 
 ### WebSocket Close Codes
 
@@ -348,20 +375,30 @@ These endpoints work without authentication:
 | `GET /api/v1/market-data/.../candles/...` | OHLCV candlestick data |
 | `GET /api/v1/market-data/.../funding/...` | Funding rate history of one market |
 | `GET /api/v1/market-data/funding/...` | Funding rate history of all markets |
+| `GET /api/v1/market-data/.../book` | L2 order book snapshot |
+| `GET /api/v1/market-data/.../ticker` | Current state of one market |
+| `GET /api/v1/market-data/ticker` | Current state of all markets |
 | `GET /api/v1/profile/announcements` | Public announcements |
 | `wss://.../ws/v1/market-data` | Real-time market data streams |
 
 ### Authenticated Endpoints (API Key)
 
-These endpoints require a signed request from an enrolled API key (see [Authentication](./authentication.md)):
+These endpoints require a signed request from an enrolled API key (see
+[Authentication](./authentication.md)). A **read-only** key is sufficient unless the
+row says otherwise:
 
 | Endpoint | Description |
 |----------|-------------|
+| `GET /api/v1/trading/orders` | Open orders (live state) |
+| `GET /api/v1/trading/positions` | Open positions (live state) |
+| `GET /api/v1/trading/wallet` | Wallet, accounts and all-time stats |
 | `GET /api/v1/trading/account-history` | Account events (deposits, settlements, etc.) |
 | `GET /api/v1/trading/fills` | Order fill history |
 | `GET /api/v1/trading/order-history` | Order history |
 | `GET /api/v1/trading/position-history` | Position history |
+| `GET /api/v1/trading/portfolio/...` | Equity / PnL chart data ([shape](./rest-endpoints.md#get-apiv1tradingportfoliokindperiod)) |
 | `GET /api/v1/profile/ref-code` | Your referral code |
+| `POST /api/v1/trading/orders` | Place / change / cancel orders (`trade` scope) |
 | `wss://.../ws/v1/trading` | Real-time trading data & order placement (`trade` scope) |
 
 ### Testing

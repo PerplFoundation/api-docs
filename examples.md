@@ -217,6 +217,69 @@ const funding = await getAllFundingHistory(24);
 const btcFundingToday = funding.get(MARKETS.BTC);
 ```
 
+### Get the Order Book
+
+```typescript
+// The L2 book once, rather than following it. `levels` bounds the depth of each
+// side, counted from the spread outwards; 1–100, and out of range is a 400
+// rather than a clamp.
+async function getOrderBook(marketId: number, levels = 20) {
+  const res = await fetch(`${API_URL}/v1/market-data/${marketId}/book?levels=${levels}`);
+  if (res.status === 503) {
+    // The service has not received a block update yet. Retryable.
+    throw new Error('order book not available yet');
+  }
+  const book = await res.json();
+
+  return {
+    block: book.sn,        // the block the whole book is current as of
+    bids: book.bid,        // ordered away from the spread
+    asks: book.ask,
+  };
+}
+
+// Usage
+const book = await getOrderBook(MARKETS.BTC, 10);
+console.log(`best bid ${book.bids[0]?.p}, best ask ${book.asks[0]?.p}`);
+```
+
+Subscribe to the `order-book@<market_id>` stream instead if you are tracking the
+book continuously — see
+[Order Book Subscription](#order-book-subscription). This endpoint only ever
+answers a snapshot, so there is no `o: 0` level-removal convention to handle.
+
+### Get Tickers
+
+```typescript
+// Current state of every market, keyed by market ID — the same shape the
+// `market-state` stream publishes.
+async function getTickers() {
+  const res = await fetch(`${API_URL}/v1/market-data/ticker`);
+  const ticker = await res.json();
+  return new Map(
+    Object.entries(ticker.d).map(([id, state]) => [Number(id), state as any]),
+  );
+}
+
+// One market only — still a map, with one entry
+async function getTicker(marketId: number) {
+  const res = await fetch(`${API_URL}/v1/market-data/${marketId}/ticker`);
+  const ticker = await res.json();
+  return ticker.d[marketId];
+}
+
+// Usage
+const tickers = await getTickers();
+for (const [id, state] of tickers) {
+  console.log(`market ${id}: mark ${state.mrk}, 24h volume ${state.dva}`);
+}
+```
+
+A market whose state has not been received yet is **absent** from `d` rather than
+zeroed — do not assume a key exists for every market in `/v1/pub/context`. If no
+market state is available at all the request is refused with 503 instead of
+returning an empty map.
+
 ---
 
 ## Market Data WebSocket
@@ -570,6 +633,119 @@ setTimeout(async () => {
   console.log('Order submitted:', requestId);
 }, 2000);
 ```
+
+---
+
+## Trading over REST
+
+The open orders, open positions and wallet are also served over HTTP, in the same
+shapes the WebSocket snapshots use — and orders can be placed, changed and cancelled
+without holding a connection open. A client that polls rather than streams needs no
+socket at all.
+
+Runnable: `examples/js/submit_orders.js`, `examples/typescript/submit_orders.ts`,
+`examples/python/submit_orders.py`, `examples/rust/src/bin/submit_orders.rs`.
+
+### Get Open State
+
+```typescript
+// Each of these is the snapshot the corresponding stream opens with. `sn` is the
+// block the whole snapshot is current as of — and, for an HTTP client with no
+// heartbeat stream, the head block to compute `lb` from.
+async function getOpenState() {
+  const [orders, positions, wallet] = await Promise.all([
+    signedFetch('GET', '/v1/trading/orders').then(r => r.json()),
+    signedFetch('GET', '/v1/trading/positions').then(r => r.json()),
+    signedFetch('GET', '/v1/trading/wallet').then(r => r.json()),
+  ]);
+
+  return {
+    headBlock: wallet.sn,
+    account: wallet.as[0],   // accounts of the wallet, with their all-time stats
+    orders: orders.d,        // resting orders + untriggered trigger orders
+    positions: positions.d,
+  };
+}
+```
+
+A wallet that holds **no exchange account** is answered `404`, not an empty list —
+that is the "you have not created an account yet" signal, distinct from "you have an
+account with nothing open", which is a `200` with an empty `d`.
+
+### Submit a Batch of Orders
+
+```typescript
+// A batch is judged order by order and answered with one status per order, at the
+// position of the order it answers. Read every status — the HTTP code is 200
+// whenever the orders were judged at all, however many were refused.
+async function submitOrders(orders: OrderSpec[]): Promise<Status[]> {
+  const body = JSON.stringify({ d: orders });
+  const res = await signedFetch('POST', '/v1/trading/orders', body);
+  const reply = await res.json();
+
+  if (reply.status?.code) {
+    // Refused as a whole — malformed, empty, over 100 orders, no `trade` scope,
+    // or the gateway has no head block yet. Nothing was forwarded, and the code
+    // is repeated as the HTTP status.
+    throw new Error(`batch refused: ${reply.status.code} ${reply.status.error}`);
+  }
+
+  return reply.statuses.map((status, i) => ({ order: orders[i], status }));
+}
+
+// Usage: one cancel and one placement, forwarded in that order
+const results = await submitOrders([
+  { rq: 1001, mkt: 1, acc: 7, oid: 4242, t: 5, fl: 0, lv: 0, lb: 0 },
+  { rq: 1002, mkt: 1, acc: 7, t: 1, p: price, s: size, fl: 1, lv: 500, lb: headBlock + 30 },
+]);
+
+for (const { order, status } of results) {
+  if (status.code === 0) {
+    console.log(`rq=${order.rq} accepted for forwarding`);   // not "filled"
+  } else if (status.code === 429) {
+    console.log(`rq=${order.rq} outran the rate allowance — retry this one`);
+  } else {
+    console.log(`rq=${order.rq} refused: ${status.code} ${status.error}`);
+  }
+}
+```
+
+Four things to get right, none of which the HTTP status tells you:
+
+1. **A zero code acknowledges forwarding, not execution.** Whether the order posted,
+   filled or was rejected is settled a block later — read it from the WebSocket order
+   updates (`mt: 24`) or by polling `GET /v1/trading/orders`.
+2. **A batch is not a transaction.** Orders that were accepted stay accepted when a
+   later one is refused.
+3. **Orders are identified by position.** `statuses[i]` answers `d[i]`; there is no
+   echo of the order in the status.
+4. **Every order costs a unit of the request-rate allowance.** A batch that outruns it
+   is served up to that point, and the rest are answered `429` in their own positions
+   and may be retried.
+
+### Confirming an Order Landed
+
+```typescript
+// The acknowledgement said "forwarded". Poll the snapshot for the request ID to
+// see what actually happened to it.
+async function awaitOrder(requestId: number, attempts = 10) {
+  for (let i = 0; i < attempts; i++) {
+    await new Promise(r => setTimeout(r, 1000));
+    const snapshot = await signedFetch('GET', '/v1/trading/orders').then(r => r.json());
+    const order = snapshot.d.find(o => o.rq === requestId);
+    if (order) return order;
+  }
+  return null;  // never posted — check the order history for the failure reason
+}
+```
+
+Request IDs (`rq`) are tracked per account. A **new** order's `rq` must be **strictly
+greater** than `lfr` on the account in the wallet snapshot — the last request ID the
+exchange forwarded — so take `rq = max(localCounter, lfr) + 1`; `rq <= lfr` is
+rejected as `OrderDescIdTooLow`, and an id below the last accepted is refused up front
+with `400`. Re-sending the **same** `rq` is the retry mechanism and stays accepted —
+see [Placing Orders](./websocket.md#placing-orders) for the full at-most-once rules,
+which are identical on both transports.
 
 ---
 

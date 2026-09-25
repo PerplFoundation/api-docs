@@ -455,6 +455,89 @@ from the book while the taker fills on from other inventory, whereas a taker who
 limit is exceeded unwinds the whole settlement and fills nothing. See
 [Placing Orders](./websocket.md#placing-orders) for both sides in detail.
 
+### OrderSpec
+
+An order placement, change or cancellation **as the client describes it** — the same
+description on both transports. It is what a WebSocket `OrderRequest` (mt: 22) carries
+under its message header, and what the
+[order submission endpoint](./rest-endpoints.md#post-apiv1tradingorders) accepts
+without one.
+
+```typescript
+interface OrderSpec {
+  rq: RequestID;    // Request ID — idempotency key, must not decrease per account
+  mkt: MarketID;
+  acc: AccountID;
+  oid?: OrderID;    // Order to change or cancel; omit for new orders
+  t: OrderType;
+  p?: Price;        // Limit price (0 = market)
+  s: Size;          // Size (scaled)
+  a?: Amount;       // Amount — OrderTypeIncreasePositionCollateral only
+  ms?: number;      // Max market-order slippage, bps (0 = market default)
+  mnp?: number;     // Max negative PnL to collateralize on a fill, bps of resulting notional
+  tif?: number;     // Good-till block (GTC if unspecified; ignored for trigger orders)
+  fl: OrderFlags;
+  tp?: Price;       // Trigger price
+  tpc?: TriggerPriceCondition;
+  tr?: RequestID;   // Request whose outcome activates this trigger order
+  lp?: PositionID;  // Position this trigger order is linked to
+  lv: number;       // Leverage (hundredths, e.g. 1000 = 10x)
+  lb: number;       // Last execution block (head < lb <= head + order_ttl_blocks, or 0)
+  bf?: number;      // Builder fee, hundred-thousandths — builder-bound keys only
+}
+```
+
+Field-by-field semantics, the at-most-once delivery rules and the retry strategy are
+documented at [Placing Orders](./websocket.md#placing-orders) and apply identically on
+both transports.
+
+### BatchOrderRequest
+
+Several `OrderSpec`s in one request, each with the meaning it has on its own — the
+rules on request IDs, retries and at-most-once execution are **per order, not per
+batch**. The orders may name different markets and different accounts of the calling
+wallet, and are handed to the exchange in the order they are listed.
+
+```typescript
+interface BatchOrderRequest {
+  mt?: 30;         // MsgTypeBatchOrderRequest
+  sn?: number;     // Echoed as `cid` on the response
+  d: OrderSpec[];  // 1–100 orders
+}
+```
+
+Accepted by the
+[order submission endpoint](./rest-endpoints.md#post-apiv1tradingorders) only. The
+message type is allocated on both transports, but the WebSocket connection does not
+currently accept a batch frame — submit orders there one `OrderRequest` (mt: 22) at a
+time.
+
+### BatchStatusResponse
+
+The answer to a request carrying several operations: one `Status` per operation, at
+the position of the operation it answers.
+
+```typescript
+interface BatchStatusResponse {
+  mt: 31;              // MsgTypeBatchStatusResponse
+  cid?: number;        // `sn` of the request, when it carried one
+  status: Status;      // Status of the request as a whole
+  statuses?: Status[]; // Status of each operation, in request order
+}
+
+interface Status {
+  code: number;        // 0 = success
+  error?: string;      // Human-readable description
+}
+```
+
+A **zero** `status.code` means the operations were judged individually and `statuses`
+carries their outcomes. A **non-zero** `status.code` means the request was refused
+before any operation was looked at: nothing was acted on and `statuses` is empty.
+
+Operations do not share a fate — a batch is not a transaction, and some of it
+succeeding while the rest is refused is the normal outcome, not an error.
+
 ---
 
 ## Fill
@@ -475,8 +558,9 @@ interface Fill {
 ```
 
 `bfa` is non-zero only for fills of orders placed with a builder-bound API key
-that requested a fee, and only on the size that opens or increases a position —
-see [Integrations → Builder codes](./integrations.md#builder-codes).
+that requested a fee — see
+[Integrations → Builder codes](./integrations.md#builder-codes). It follows the
+account fee onto every fill that changes a position's size, closes included.
 
 ### LiquiditySide
 
@@ -505,7 +589,8 @@ interface Position {
   ep: Price;           // Entry price
   epr?: number;        // Q16 fractional residue of EntryPrice
   s: Size;             // Size
-  fee: Amount;         // Fees paid
+  fee: Amount;         // Fees to charge against this position/event (see below)
+  cfee?: Amount;       // Fee the close or decrease itself paid; included in `fee`
   efs: SPrice;         // Entry funding sum
   lv: number;          // Leverage (hundredths)
   dpnl?: Amount;       // Realized delta PnL
@@ -516,6 +601,41 @@ interface Position {
   e?: Position[];      // Settlement events (update only)
 }
 ```
+
+The same shape is used for a **position snapshot** and for each entry of `e`, a
+**settlement event**. In an event the amount fields report what *that event* moved
+rather than the position's standing state, and `sr` says which kind of event it is
+and therefore which fields are meaningful.
+
+### Fees on a position
+
+`fee` is the total to charge against this position or event as the corresponding
+"cost" when computing PnL/ROI, **including any builder fee** — a position does not
+report the builder share separately the way trades and account totals do. Its meaning
+differs between the two forms the type is used in:
+
+| Where | `fee` holds | `cfee` |
+|---|---|---|
+| **Snapshot** (a live position) | The entry-side fees still outstanding against the position, proportional to its remaining size. Indicative: the amount was actually charged when the position was opened or increased, and this is the share of it the remaining size carries. **It does not include the fee that closing the remaining size will cost**, which is not knowable in advance | Always `0` |
+| **Event that adds size** (`sr`: 17 Increased, 21 Opened, 18 Inverted) | What that fill charged | `0` |
+| **Event that removes size** (`sr`: 13 Closed, 14 Decreased) | The pro-rata entry fees the closed size released **plus** `cfee`. Subtract it from the event's realized PnL for a net figure | The fee the close or decrease itself paid |
+| **Liquidation / deleverage / unwind** (`sr`: 19, 15, 22) | The entry share released | `0` — these are not charged a trading fee |
+
+So on an exit, `fee - cfee` is the entry side and `cfee` is the exit side. Use `fee`
+for PnL; use `cfee` only when you want to show the two apart.
+
+`cfee` is reported as **zero rather than omitted** everywhere it does not apply: on a
+snapshot, on events that add to a position, and on the exits the exchange does not
+charge — liquidation, deleveraging, unwinding, and closing a frozen account. Read
+`sr` to know which kind of event you are looking at rather than treating a zero
+`cfee` as a signal in its own right.
+
+An **inversion** — an order that crosses through flat and opens the other side — is
+one fill reported as two events at the same log position: an `sr: 13` for the side
+that closed, carrying its `cfee`, and an `sr: 18` for the side that opened, carrying
+its entry fee. The contract charges the inversion as a single fee on the full order
+lot and it is split between the two rows by size, so summing across both is correct
+and neither double-counts.
 
 ### PositionType
 
@@ -645,6 +765,31 @@ interface AccountStats {
 
 ---
 
+### Portfolio
+
+Equity or PnL of a wallet as a time series, served by
+[GET /api/v1/trading/portfolio/:kind/:period](./rest-endpoints.md#get-apiv1tradingportfoliokindperiod).
+Which of the two `chart` carries is set by the `kind` in the request — the shape is
+the same either way.
+
+```typescript
+interface Portfolio {
+  at: BlockTimestamp;   // Block/timestamp of the last update
+  chart: ChartPoint[];  // Chart points, older to newer
+}
+```
+
+### ChartPoint
+
+```typescript
+interface ChartPoint {
+  t: number;   // Timestamp (ms)
+  v: Amount;   // Value (collateral token)
+}
+```
+
+---
+
 ## Market Data
 
 ### L2PriceLevel
@@ -656,6 +801,24 @@ interface L2PriceLevel {
   o: number;  // Number of orders
 }
 ```
+
+### L2Book
+
+```typescript
+interface L2Book {
+  mt: MessageType;      // 15 = snapshot, 16 = update
+  sn?: number;          // Block the book is current as of (REST snapshot)
+  sid?: number;         // Subscription ID (WebSocket)
+  at: BlockTimestamp;
+  bid: L2PriceLevel[];  // Bid levels, ordered away from the spread
+  ask: L2PriceLevel[];  // Ask levels, ordered away from the spread
+}
+```
+
+Snapshot and update are the same shape, distinguished by `mt`. On an **update**
+(`mt: 16`) a level with `o: 0` is a removal. The
+[REST endpoint](./rest-endpoints.md#get-apiv1market-datamarket_idbook) only ever
+answers a snapshot, at most 100 levels per side.
 
 ### Trade
 

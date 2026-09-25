@@ -57,7 +57,15 @@ interface MessageHeader {
 | 27 | PositionsUpdate | Server → Client |
 | 28 | AccountStatsUpdate | Server → Client |
 | 29 | ApiKeySignIn | Client → Server |
+| 30 | BatchOrderRequest | HTTP only |
+| 31 | BatchStatusResponse | HTTP only |
 | 100 | Heartbeat | Server → Client |
+
+`30` / `31` are allocated across both transports, but the WebSocket connection does
+not currently accept a batch frame: it is the body and answer of
+[`POST /v1/trading/orders`](./rest-endpoints.md#post-apiv1tradingorders). Over this
+connection, submit orders one `OrderRequest` (mt: 22) at a time — a socket already
+pipelines them without paying a round trip each.
 
 ---
 
@@ -156,6 +164,10 @@ interface L2PriceLevel {
 **Update** (mt: 16):
 Same structure. Price levels with `o: 0` should be removed.
 
+The opening snapshot is also served over HTTP — see
+[`GET /v1/market-data/:market_id/book`](./rest-endpoints.md#get-apiv1market-datamarket_idbook).
+Subscribe here if you are tracking the book; call the endpoint if you want it once.
+
 ### Trade Messages
 
 **Snapshot** (mt: 17):
@@ -216,6 +228,12 @@ interface MarketState {
   tvl: string;   // Total value locked
 }
 ```
+
+The same state is served over HTTP, keyed the same way — see
+[`GET /v1/market-data/:market_id/ticker`](./rest-endpoints.md#get-apiv1market-datamarket_idticker)
+for one market and
+[`GET /v1/market-data/ticker`](./rest-endpoints.md#get-apiv1market-dataticker) for all
+of them.
 
 ### Heartbeat (mt: 100)
 
@@ -307,6 +325,12 @@ After authentication, you receive snapshots:
 
 The **WalletSnapshot** includes a sequence number (`sn` from `MessageHeader`) that serves as the starting point for sequence tracking. Store this value and use it to validate subsequent heartbeat sequence numbers (see [Heartbeat](#heartbeat-trading)).
 
+Each of these three snapshots is also served over HTTP, in the identical shape, for a
+client that wants the state once rather than following it — see
+[Trading State Endpoints](./rest-endpoints.md#trading-state-endpoints). Opening a
+connection purely to read a snapshot and closing it is the pattern those endpoints
+replace.
+
 ### Placing Orders
 
 > **Prerequisite**: order forwarding — "One-Click Trading" — must be enabled for the
@@ -345,6 +369,14 @@ interface OrderRequest {
 `bf` is only valid on a **builder-bound** API key, and only up to the ceiling
 that key was enrolled with; the builder code itself comes from the key, never
 from the request. See [Integrations → Builder codes](./integrations.md#builder-codes).
+
+The fields above the message header — everything from `rq` down — are an
+[`OrderSpec`](./types.md#orderspec), which is also what
+[`POST /v1/trading/orders`](./rest-endpoints.md#post-apiv1tradingorders) accepts for a
+client whose flow does not justify holding a connection open. Everything in this
+section — the delivery semantics, request-ID rules, retries and trigger-order
+behaviour — applies identically on that transport; the exchange cannot tell the two
+apart.
 
 **Delivery Semantics & Idempotency**:
 
