@@ -398,6 +398,9 @@ row says otherwise:
 | `GET /api/v1/trading/position-history` | Position history |
 | `GET /api/v1/trading/portfolio/...` | Equity / PnL chart data ([shape](./rest-endpoints.md#get-apiv1tradingportfoliokindperiod)) |
 | `GET /api/v1/profile/ref-code` | Your referral code |
+| `GET /api/v1/profile/builder/stats` | All-time figures for your [builder codes](./integrations.md#builder-codes) ([shape](./rest-endpoints.md#get-apiv1profilebuilderstats)) |
+| `GET /api/v1/profile/builder/payouts` | Per-epoch builder earnings and settlement ([shape](./rest-endpoints.md#get-apiv1profilebuilderpayouts)) |
+| `GET /api/v1/trading/maker-stats` | Market making statistics — market maker programme only ([shape](./rest-endpoints.md#get-apiv1tradingmaker-stats)) |
 | `POST /api/v1/trading/orders` | Place / change / cancel orders (`trade` scope) |
 | `wss://.../ws/v1/trading` | Real-time trading data & order placement (`trade` scope) |
 
