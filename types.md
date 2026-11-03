@@ -159,8 +159,17 @@ interface Context {
   instances: ProtocolInstance[];
   tokens: Token[];
   markets: Market[];
+  rewards: {
+    builder_epoch_starts_at?: number;     // First builder epoch starts at, ms
+    builder_epoch_duration_sec?: number;  // Epoch duration, sec
+    builder_payout_share_bps?: number;    // Share of accrued builder fees paid out, bps (10000 = the whole fee)
+  };
 }
 ```
+
+`rewards` lists only the fields builders need. All three are absent while the builder
+payout program is not running — see
+[The epoch in flight](./rest-endpoints.md#the-epoch-in-flight).
 
 ---
 
@@ -1007,10 +1016,11 @@ interface MakerMarketStats {
 }
 ```
 
-Fees are **gross** — what the fill cost, including any builder fee charged on top of
-the exchange fee — consistent with `f` elsewhere on the API
+Fees are **gross** in the same sense as `f` elsewhere on the API — the exchange fee
+plus any builder fee charged on top
 ([Reconciling what was charged](./integrations.md#reconciling-what-was-charged)).
-Never negative: a maker rebate is not charged as a fee.
+Unlike `Fill.f` they are never negative: maker rebates are not counted, so summing
+`Fill.f` over the same fills will not match when the wallet earned rebates.
 
 `f` counts both sides, so a fill where the wallet is both maker and taker counts
 twice. The averages are zero when nothing filled on that side.
@@ -1044,9 +1054,10 @@ to begin with; this is not a rounded percentage.
 - `sp` — measured only while you quoted both sides. Zero when you never quoted both
   sides inside the widest band.
 - `bd` / `ad` — either can be **negative**: a side quoted through the mark still
-  counts, and reads as the distance past it. The two sum to `sp`, and their
-  difference is the inventory skew — positive meaning the bid sits further from the
-  mark than the ask, so the wallet is leaning to sell.
+  counts, and reads as the distance past it. They sum to `sp` only when you quoted
+  both sides throughout the window. Their difference is the inventory skew —
+  positive meaning the bid sits further from the mark than the ask, so the wallet
+  is leaning to sell.
 
 Each figure is an average over the window **as a whole**, formed from totals summed
 across the days it covers. A busy day therefore weighs more than a quiet one, and

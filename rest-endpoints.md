@@ -37,7 +37,7 @@ interface Context {
   rewards: {
     builder_epoch_starts_at?: number;     // First builder epoch starts at, ms
     builder_epoch_duration_sec?: number;  // Epoch duration, sec
-    builder_payout_share_bps?: number;    // Share of accrued builder fees paid out, bps
+    builder_payout_share_bps?: number;    // Share of accrued builder fees paid out, bps (10000 = the whole fee)
   };
 }
 ```
@@ -561,18 +561,10 @@ new address and no longer at the old one.
 
 #### The epoch in flight
 
-The running epoch has no row here. Its window comes from the rewards configuration
-on [`/pub/context`](#get-apiv1pubcontext):
-
-```typescript
-builder_epoch_starts_at?: number;     // First builder epoch starts at, ms
-builder_epoch_duration_sec?: number;  // Epoch duration, sec
-builder_payout_share_bps?: number;    // Share of accrued builder fees paid out, bps (10000 = the whole fee)
-```
-
-Epoch N (1-based) runs from
-`builder_epoch_starts_at + (N - 1) * builder_epoch_duration_sec`. All three are
-absent while the builder payout program is not running.
+The running epoch has no row here. Its window comes from the `rewards` block on
+[`/pub/context`](#get-apiv1pubcontext). Epoch N (1-based) starts at
+`builder_epoch_starts_at + (N - 1) * builder_epoch_duration_sec * 1000` (ms). The
+`rewards` fields are absent while the builder payout program is not running.
 
 What a code has accrued into the running epoch is the newest closed `tf` for that
 code subtracted from that code's `bf` on
@@ -580,8 +572,11 @@ code subtracted from that code's `bf` on
 the payout share, which is applied multiply-then-divide, truncating toward zero:
 
 ```typescript
-const accrued   = max(0n, BigInt(stats.bf) - BigInt(newestClosed.tf));
-const owedSoFar = accrued * BigInt(ctx.rewards.builder_payout_share_bps) / 10000n;
+const share     = ctx.rewards.builder_payout_share_bps;  // absent while the program is off
+const baseline  = BigInt(newestClosed?.tf ?? 0);          // no closed row yet for this code
+const diff      = BigInt(stats.bf) - baseline;
+const accrued   = diff > 0n ? diff : 0n;
+const owedSoFar = share === undefined ? 0n : accrued * BigInt(share) / 10000n;
 ```
 
 **Example**:
