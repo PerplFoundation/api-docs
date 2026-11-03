@@ -159,8 +159,17 @@ interface Context {
   instances: ProtocolInstance[];
   tokens: Token[];
   markets: Market[];
+  rewards: {
+    builder_epoch_starts_at?: number;     // First builder epoch starts at, ms
+    builder_epoch_duration_sec?: number;  // Epoch duration, sec
+    builder_payout_share_bps?: number;    // Share of accrued builder fees paid out, bps (10000 = the whole fee)
+  };
 }
 ```
+
+`rewards` lists only the fields builders need. All three are absent while the builder
+payout program is not running — see
+[The epoch in flight](./rest-endpoints.md#the-epoch-in-flight).
 
 ---
 
@@ -870,6 +879,229 @@ interface Announcement {
   content: string;
 }
 ```
+
+### BuilderStats
+
+Returned by [`GET /profile/builder/stats`](./rest-endpoints.md#get-apiv1profilebuilderstats).
+
+```typescript
+interface BuilderStats {
+  at: BlockTimestamp;      // Block/timestamp these figures are current at
+  d: BuilderStatsEntry[];  // One entry per registered code, ordered by code
+}
+```
+
+### BuilderStatsEntry
+
+All-time figures for one builder code. A code with no attributed flow is a zero row
+ranked last, not an omission.
+
+```typescript
+interface BuilderStatsEntry {
+  i: number;     // uint32 - Rank (1-based) on the all-time volume ranking
+  id: number;    // uint32 - Builder code, 1..255
+  n?: string;    // Registered display name
+  v: Amount;     // All-time volume attributed to this code, CNS
+  pf: Amount;    // Fees this code's flow generated for the exchange, CNS
+  bf: Amount;    // Builder fees this code accrued, CNS — gross, before the payout share
+  t: number;     // uint64 - Trades attributed to this code (both sides counts twice)
+  u: number;     // uint64 - Distinct accounts that traded through this code
+  m: number;     // uint32 - Markets this code traded
+  s: number;     // uint32 - Share of total builder volume, in bps
+  en: boolean;   // Whether the code is still live
+}
+```
+
+`u` is not additive across codes, so these rows cannot be summed into a totals row.
+
+### BuilderPayouts
+
+Returned by [`GET /profile/builder/payouts`](./rest-endpoints.md#get-apiv1profilebuilderpayouts).
+
+```typescript
+interface BuilderPayouts {
+  at: BlockTimestamp;  // Block/timestamp of the most recent settlement or aggregation
+  d: BuilderPayout[];  // Closed epochs only, newest epoch first, then by code
+}
+```
+
+### BuilderPayout
+
+One builder code's earnings over one closed epoch. There is one row per epoch **per
+code**; an epoch a held code earned nothing in is a zero row.
+
+```typescript
+interface BuilderPayout {
+  e: number;               // uint32 - Epoch number, 1-based
+  sts: number;             // uint64 - Epoch start (ms)
+  dur: number;             // uint32 - Epoch duration (sec)
+  id: number;              // uint32 - Builder code
+  v: Amount;               // Volume attributed during the epoch, CNS
+  f: Amount;               // Builder fees accrued during the epoch, CNS — gross
+  r: Amount;               // Amount owed for the epoch, CNS — `f` after the payout share
+  tv: Amount;              // Volume attributed through the END of this epoch, CNS
+  tf: Amount;              // Builder fees accrued through the END of this epoch, CNS, gross
+  s: BuilderPayoutStatus;  // Settlement status
+  txid?: string;           // Payout transaction hash, set when transferred
+  pts?: number;            // uint64 - Payout timestamp (ms), set when transferred
+  pbl?: number;            // uint64 - Block the payout was mined at, set when transferred
+}
+```
+
+`tv` / `tf` are running totals through the end of the epoch, not the epoch's own
+figures. `tf` is the baseline the running epoch's accrual is measured from — see
+[The epoch in flight](./rest-endpoints.md#the-epoch-in-flight).
+
+### BuilderPayoutStatus
+
+```typescript
+type BuilderPayoutStatus = number;   // uint8
+```
+
+| Value | Name | Meaning |
+|-------|------|---------|
+| 0 | Pending | Nothing to settle for this epoch |
+| 1 | Processing | The epoch is closed and `r` is final; no matching transfer observed yet |
+| 2 | Transferred | A transfer matching `r` landed after the epoch closed; `txid` / `pts` / `pbl` are set |
+
+Reconcile against `txid` rather than the status alone.
+
+---
+
+## Market Making
+
+Returned by [`GET /trading/maker-stats`](./rest-endpoints.md#get-apiv1tradingmaker-stats).
+
+### MakerStats
+
+```typescript
+interface MakerStats {
+  at: BlockTimestamp;   // Block/timestamp of the most recent statistics carried
+  from: number;         // uint64 - Start of the first UTC day covered (ms)
+  to: number;           // uint64 - Start of the last UTC day covered (ms), inclusive
+  d: { [marketId: number]: MakerMarketStats };  // Per-market, keyed by MarketID
+}
+```
+
+Markets the wallet neither traded nor quoted in the window are absent, not zeroed.
+
+---
+
+### MakerMarketStats
+
+Every fill figure is reported for the maker (resting) side, the taker (aggressing)
+side, and the two summed, so a wallet that both quotes and aggresses in the same
+market can be read either way round without differencing.
+
+```typescript
+interface MakerMarketStats {
+  mv: Amount;    // Volume filled as maker, CNS
+  tv: Amount;    // Volume filled as taker, CNS
+  v: Amount;     // Total volume filled, CNS — the two summed
+
+  mfee: Amount;  // Fees paid on maker fills, CNS
+  tfee: Amount;  // Fees paid on taker fills, CNS
+  fee: Amount;   // Total fees paid, CNS — the two summed
+
+  mf: number;    // uint64 - Fills where the wallet was the maker
+  tf: number;    // uint64 - Fills where the wallet was the taker
+  f: number;     // uint64 - Fills counting both sides
+
+  mas: Amount;   // Average maker volume per maker fill, CNS, rounded down
+  tas: Amount;   // Average taker volume per taker fill, CNS, rounded down
+  as: Amount;    // Average volume per fill across both sides, CNS, rounded down
+
+  q?: MakerQuoteStats;        // Band-independent quote quality
+  qb?: MakerQuoteBandStats[]; // One entry per configured band, tightest first
+}
+```
+
+Fees are **gross** in the same sense as `f` elsewhere on the API — the exchange fee
+plus any builder fee charged on top
+([Reconciling what was charged](./integrations.md#reconciling-what-was-charged)).
+Unlike `Fill.f` they are never negative: maker rebates are not counted, so summing
+`Fill.f` over the same fills will not match when the wallet earned rebates.
+
+`f` counts both sides, so a fill where the wallet is both maker and taker counts
+twice. The averages are zero when nothing filled on that side.
+
+`q` and `qb` are **omitted when the market was never observed over the window**.
+That is not the same as a market that was observed and never quoted, which reports
+them with zero uptime — so do not render a missing `q` as 0 %.
+
+---
+
+### MakerQuoteStats
+
+Quote quality for one market over the window, across the bands together.
+
+```typescript
+interface MakerQuoteStats {
+  cov: Micros;  // Fraction of the window the market could be quoted at all
+  sp: Micros;   // Average own-quote spread, as a fraction of the mark price
+  bd: Micros;   // Average distance from the mark price to your own best bid
+  ad: Micros;   // Average distance from the mark price to your own best ask
+}
+```
+
+Every fraction and price distance here and on `MakerQuoteBandStats` is in
+[`Micros`](#primitive-types) — 10^-6 fractions, so `1000000` is the whole and
+`10000` is one percent. The distances are measured in millionths of the mark price
+to begin with; this is not a rounded percentage.
+
+- `cov` — the market was unpaused and priced. `1000000` means it was scoreable
+  throughout the window.
+- `sp` — measured only while you quoted both sides. Zero when you never quoted both
+  sides inside the widest band.
+- `bd` / `ad` — either can be **negative**: a side quoted through the mark still
+  counts, and reads as the distance past it. They sum to `sp` only when you quoted
+  both sides throughout the window. Their difference is the inventory skew —
+  positive meaning the bid sits further from the mark than the ask, so the wallet
+  is leaning to sell.
+
+Each figure is an average over the window **as a whole**, formed from totals summed
+across the days it covers. A busy day therefore weighs more than a quiet one, and
+averaging two windows' figures does not reproduce the figure for their union.
+
+---
+
+### MakerQuoteBandStats
+
+Quote quality for one market inside one band. A band is a distance from the mark
+price and a minimum notional: an order counts towards the band while it rests inside
+the former, and a side counts as quoted while at least the latter rests there.
+
+```typescript
+interface MakerQuoteBandStats {
+  bps: number;   // uint32 - Max distance from the mark at which an order counts, in bps
+  mn: Amount;    // Minimum notional that must rest inside the band, CNS
+
+  u: Micros;     // Fraction of the window with the required notional on BOTH sides
+  ub: Micros;    // ...on the bid
+  ua: Micros;    // ...on the ask
+
+  bs: Size;      // Average bid size resting inside the band, LNS, rounded down
+  as: Size;      // Average ask size resting inside the band, LNS, rounded down
+  bn: Amount;    // Average bid notional resting inside the band, CNS, rounded down
+  an: Amount;    // Average ask notional resting inside the band, CNS, rounded down
+
+  bls: Micros;   // Your share of everything resting on the bid inside the band
+  als: Micros;   // Your share of everything resting on the ask inside the band
+}
+```
+
+`bps` is reported in the unit the band is configured in; the distances it bounds are
+in 10^-6 fractions, which is `bps * 100`.
+
+Each of `ub` / `ua` is at least `u`, so the difference is time spent quoting one
+side only.
+
+The averages cover the **whole window**, not only the time spent quoting, so time
+away from the band counts as zero.
+
+`bls` / `als` include your own orders: `1000000` means you were the only liquidity
+in the band. The share falls when another participant arrives, so it moves for
+reasons outside your own quoting.
 
 ---
 

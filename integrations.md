@@ -430,6 +430,28 @@ unset shows up as volume with `bfa: 0`.
 Accrued builder fees are collected per builder code and settled to the Perpl account
 registered with your code, on a periodic epoch schedule.
 
+Two endpoints report this, both signed with your own API key and resolved from the
+wallet your codes are registered to:
+
+| Endpoint | Reports |
+|---|---|
+| [`GET /v1/profile/builder/stats`](./rest-endpoints.md#get-apiv1profilebuilderstats) | All-time volume, fees, trades, traders and markets per code |
+| [`GET /v1/profile/builder/payouts`](./rest-endpoints.md#get-apiv1profilebuilderpayouts) | Per-epoch earnings, amount owed and settlement status per code |
+
+A key you enrolled on a *user's* behalf authenticates as that user, so it will not
+see your builder figures — sign these with a key enrolled by the registered wallet
+itself.
+
+The epoch schedule and the share of accrued fees that is paid out are published on
+[`/v1/pub/context`](./rest-endpoints.md#get-apiv1pubcontext) as
+`builder_epoch_starts_at`, `builder_epoch_duration_sec` and
+`builder_payout_share_bps` — see
+[The epoch in flight](./rest-endpoints.md#the-epoch-in-flight) for computing what
+the running epoch has accrued.
+
+Builder fees on both endpoints are reported **gross**, before the payout share is
+applied; only `r` on a payout row is the amount owed.
+
 ---
 
 ## Next steps

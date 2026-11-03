@@ -27,6 +27,24 @@ interface Context {
 Each market's `config` carries the full per-tier fee schedule
 (`maker_fees` / `taker_fees`) — see [Fees & fee tiers](./README.md#fees--fee-tiers).
 
+The response also carries a `rewards` block. The fields of it a
+[builder](./integrations.md#builder-codes) needs are the payout epoch clock and
+share:
+
+```typescript
+interface Context {
+  // ...
+  rewards: {
+    builder_epoch_starts_at?: number;     // First builder epoch starts at, ms
+    builder_epoch_duration_sec?: number;  // Epoch duration, sec
+    builder_payout_share_bps?: number;    // Share of accrued builder fees paid out, bps (10000 = the whole fee)
+  };
+}
+```
+
+All three are absent while the builder payout program is not running — see
+[The epoch in flight](#the-epoch-in-flight).
+
 **Example**:
 ```bash
 # Using default live URL
@@ -418,6 +436,155 @@ interface Announcement {
   title: string;
   content: string;
 }
+```
+
+---
+
+## Builder Endpoints
+
+Reporting for **[builder codes](./integrations.md#builder-codes)**: what each of
+your codes has earned, and what has been settled to you per payout epoch.
+
+Both resolve your codes from the **authenticated wallet** — you reach them as the
+wallet your codes are registered to. A key you enrolled on a *user's* behalf
+authenticates as that user, not as you, so it sees that user's view and not yours.
+
+A wallet that holds no builder codes is served an empty list, not an error.
+
+### GET /api/v1/profile/builder/stats
+
+All-time headline figures for every builder code registered to the calling wallet,
+one row per code — the figures the public builder leaderboard reports, restricted
+to your own codes.
+
+**Authentication**: API-key signature (any scope)
+
+**Response**:
+```typescript
+interface BuilderStats {
+  at: BlockTimestamp;      // Block/timestamp these figures are current at
+  d: BuilderStatsEntry[];  // One entry per registered code, ordered by code. Empty when you hold none
+}
+
+interface BuilderStatsEntry {
+  i: number;    // Rank (1-based) on the all-time volume ranking of the builder leaderboard
+  id: number;   // Builder code, 1..255
+  n?: string;   // Registered display name
+  v: Amount;    // All-time volume attributed to this code, CNS
+  pf: Amount;   // Fees this code's flow generated for the exchange, CNS
+  bf: Amount;   // Builder fees this code accrued, CNS — gross, before the payout share
+  t: number;    // Trades attributed to this code. A trade with the code on both sides counts twice
+  u: number;    // Distinct accounts that traded through this code
+  m: number;    // Markets this code traded
+  s: number;    // Share of total builder volume, in bps
+  en: boolean;  // Whether the code is still live
+}
+```
+
+A code with no attributed flow is reported as a **zero row ranked last**, not
+omitted. Rank is never `0`.
+
+`en: false` is a retired code: it keeps reporting its history, but can no longer be
+enrolled against and earns nothing in epochs closed while it is retired.
+
+There is no totals row across your codes, and you should not build one by summing
+`d`. Volume, fees and trades are additive, but `u` is not — an account routing
+through two of your codes is one trader, not two.
+
+| Code | Meaning |
+|------|---------|
+| 503 | Builder registration data is momentarily unavailable; retry shortly. Distinguished from an empty `d`, which means the wallet holds no codes |
+
+**Example**:
+```bash
+API_URL=${PERPL_API_URL:-https://app.perpl.xyz/api}
+
+# signed with X-API-* headers, see authentication.md
+curl "${API_URL}/v1/profile/builder/stats"
+```
+
+---
+
+### GET /api/v1/profile/builder/payouts
+
+Per-epoch earnings for every builder code the calling wallet holds, newest epoch
+first.
+
+**Authentication**: API-key signature (any scope)
+
+**Response**:
+```typescript
+interface BuilderPayouts {
+  at: BlockTimestamp;  // Block/timestamp of the most recent settlement or aggregation carried
+  d: BuilderPayout[];  // Closed epochs only, newest epoch first, then by code
+}
+
+interface BuilderPayout {
+  e: number;               // Epoch number, 1-based
+  sts: number;             // Epoch start (ms)
+  dur: number;             // Epoch duration (sec)
+  id: number;              // Builder code
+  v: Amount;               // Volume attributed to this code during the epoch, CNS
+  f: Amount;               // Builder fees this code accrued during the epoch, CNS — gross
+  r: Amount;               // Amount owed for the epoch, CNS — `f` after the payout share
+  tv: Amount;              // Volume attributed through the END of this epoch, CNS (running total)
+  tf: Amount;              // Builder fees accrued through the END of this epoch, CNS, gross (running total)
+  s: BuilderPayoutStatus;  // Settlement status
+  txid?: string;           // Payout transaction hash, set when transferred
+  pts?: number;            // Payout timestamp (ms), set when transferred
+  pbl?: number;            // Block the payout was mined at, set when transferred
+}
+```
+
+**One row per epoch *per code*, not one row per epoch.** A wallet holding three
+codes gets three rows for each epoch; the epoch's own total is their sum. Group by
+`e` before displaying an epoch.
+
+An epoch a held code earned nothing in is a **zero row, not an omission**.
+
+Use each row's own `sts` / `dur` for a closed epoch's window rather than deriving it
+from the configured clock below.
+
+If a code is re-pointed to a different address, its whole history is reported at the
+new address and no longer at the old one.
+
+#### Settlement status
+
+| `s` | Name | Meaning |
+|---|---|---|
+| 0 | Pending | Nothing to settle: the code earned no fees in the epoch, charged no fee, or was not registered when the epoch was aggregated |
+| 1 | Processing | The epoch is closed and `r` is final; no matching transfer has been observed yet |
+| 2 | Transferred | A transfer matching `r` landed after the epoch closed, so `txid` / `pts` / `pbl` are set |
+
+`2` is matched by amount and time rather than recorded against the epoch, so treat
+`txid` as the thing to reconcile against rather than the status alone.
+
+#### The epoch in flight
+
+The running epoch has no row here. Its window comes from the `rewards` block on
+[`/pub/context`](#get-apiv1pubcontext). Epoch N (1-based) starts at
+`builder_epoch_starts_at + (N - 1) * builder_epoch_duration_sec * 1000` (ms). The
+`rewards` fields are absent while the builder payout program is not running.
+
+What a code has accrued into the running epoch is the newest closed `tf` for that
+code subtracted from that code's `bf` on
+[builder stats](#get-apiv1profilebuilderstats), floored at zero. Both are gross of
+the payout share, which is applied multiply-then-divide, truncating toward zero:
+
+```typescript
+const share     = ctx.rewards.builder_payout_share_bps;  // absent while the program is off
+const baseline  = BigInt(newestClosed?.tf ?? 0);          // no closed row yet for this code
+const diff      = BigInt(stats.bf) - baseline;
+const accrued   = diff > 0n ? diff : 0n;
+const owedSoFar = share === undefined ? 0n : accrued * BigInt(share) / 10000n;
+```
+
+**Example**:
+```bash
+API_URL=${PERPL_API_URL:-https://app.perpl.xyz/api}
+
+# signed with X-API-* headers, see authentication.md
+curl "${API_URL}/v1/profile/builder/payouts"
 ```
 
 ---
@@ -903,4 +1070,70 @@ curl "${API_URL}/v1/trading/portfolio/equity/all"
 
 # PnL over the last week
 curl "${API_URL}/v1/trading/portfolio/pnl/week"
+```
+
+---
+
+## Market Making
+
+### GET /api/v1/trading/maker-stats
+
+The calling wallet's market making statistics, per market, over a window of whole
+UTC days: what it filled, and how it quoted.
+
+Available to wallets enrolled on the **market maker programme** — contact Perpl.
+
+**Authentication**: API-key signature (any scope)
+
+**Query Parameters**:
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| from | number | Window start, ms. Defaults to the start of `to`'s UTC day |
+| to | number | Window end, ms. Defaults to now |
+
+Each end expands to cover the whole UTC day it falls in, so the window is always one
+or more complete days; the days actually covered come back as `from` / `to` on the
+response. With neither parameter given, the response covers the current UTC day so
+far. The window may span at most **366 days**.
+
+| Code | Meaning |
+|------|---------|
+| 400 | Malformed `from` / `to`, `from` after `to`, or a window longer than 366 days |
+| 403 | The wallet is not enrolled on the market maker programme |
+| 404 | The calling wallet holds no exchange account. See [Creating an Exchange Account](./README.md#creating-an-exchange-account) |
+
+**Response**:
+```typescript
+interface MakerStats {
+  at: BlockTimestamp;                   // Block/timestamp of the most recent statistics carried
+  from: number;                         // Start of the first UTC day covered (ms)
+  to: number;                           // Start of the last UTC day covered (ms), inclusive
+  d: { [marketId: number]: MakerMarketStats };
+}
+```
+
+`to` is the *start* of the last day, so the window covers everything up to `to` plus
+24h. Both are whole-day values and neither is the requested timestamp.
+
+Markets the wallet neither traded nor quoted in the window are **absent** rather
+than reported as zeroes.
+
+Figures are summed over every exchange account the wallet holds, so a market is
+reported once whichever account traded it. Quoting is measured per account *before*
+that summation: a wallet resting its bid on one account and its ask on another reads
+as one-sided on both, not two-sided.
+
+See [Types](./types.md#market-making) for `MakerMarketStats` and the quote
+structures it carries.
+
+**Example**:
+```bash
+API_URL=${PERPL_API_URL:-https://app.perpl.xyz/api}
+
+# Current UTC day so far
+# signed with X-API-* headers, see authentication.md
+curl "${API_URL}/v1/trading/maker-stats"
+
+# A specific window — both ends expand to whole UTC days
+curl "${API_URL}/v1/trading/maker-stats?from=1757030400000&to=1759622400000"
 ```
