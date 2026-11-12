@@ -37,7 +37,7 @@ interface Context {
   rewards: {
     builder_epoch_starts_at?: number;     // First builder epoch starts at, ms
     builder_epoch_duration_sec?: number;  // Epoch duration, sec
-    builder_payout_share_bps?: number;    // Share of accrued builder fees paid out, bps (10000 = the whole fee)
+    builder_payout_share_bps?: number;    // Share of accrued builder fees paid out, bps
   };
 }
 ```
@@ -561,10 +561,18 @@ new address and no longer at the old one.
 
 #### The epoch in flight
 
-The running epoch has no row here. Its window comes from the `rewards` block on
-[`/pub/context`](#get-apiv1pubcontext). Epoch N (1-based) starts at
-`builder_epoch_starts_at + (N - 1) * builder_epoch_duration_sec * 1000` (ms). The
-`rewards` fields are absent while the builder payout program is not running.
+The running epoch has no row here. Its window comes from the rewards configuration
+on [`/pub/context`](#get-apiv1pubcontext):
+
+```typescript
+builder_epoch_starts_at?: number;     // First builder epoch starts at, ms
+builder_epoch_duration_sec?: number;  // Epoch duration, sec
+builder_payout_share_bps?: number;    // Share of accrued builder fees paid out, bps (10000 = the whole fee)
+```
+
+Epoch N (1-based) runs from
+`builder_epoch_starts_at + (N - 1) * builder_epoch_duration_sec`. All three are
+absent while the builder payout program is not running.
 
 What a code has accrued into the running epoch is the newest closed `tf` for that
 code subtracted from that code's `bf` on
@@ -572,11 +580,8 @@ code subtracted from that code's `bf` on
 the payout share, which is applied multiply-then-divide, truncating toward zero:
 
 ```typescript
-const share     = ctx.rewards.builder_payout_share_bps;  // absent while the program is off
-const baseline  = BigInt(newestClosed?.tf ?? 0);          // no closed row yet for this code
-const diff      = BigInt(stats.bf) - baseline;
-const accrued   = diff > 0n ? diff : 0n;
-const owedSoFar = share === undefined ? 0n : accrued * BigInt(share) / 10000n;
+const accrued   = max(0n, BigInt(stats.bf) - BigInt(newestClosed.tf));
+const owedSoFar = accrued * BigInt(ctx.rewards.builder_payout_share_bps) / 10000n;
 ```
 
 **Example**:
@@ -796,7 +801,7 @@ Per-order, in `statuses[i].code`:
 | Code | Meaning |
 |------|---------|
 | 0 | Accepted for forwarding to the exchange |
-| 400 | Unknown market; order rejected by validation; `bf` not permitted for this key; request ID below the last accepted for the account (a new order's must be strictly greater than `lfr`, see below) |
+| 400 | Unknown market; order rejected by validation; `bf` not permitted for this key; `request id below last accepted for this account` (see below) |
 | 403 | The order names an account the calling wallet does not own |
 | 429 | The caller's request-rate allowance ran out partway through the batch. Retryable |
 | 503 | Order submission is backed up. Retryable |
@@ -809,13 +814,21 @@ Batch-level, in `status.code`, and repeated as the HTTP status:
 | 403 | The API key lacks the `trade` scope |
 | 503 | The gateway does not know the current exchange block yet — the case for a short while after the service starts. Retry |
 
-Request IDs (`rq`) are tracked per account. A **new** order's `rq` must be **strictly
-greater** than `lfr`, the last request ID forwarded for that account: `rq <= lfr` is
-rejected as `OrderDescIdTooLow`. Seed a counter from `lfr` on the wallet snapshot and
-take `rq = max(counter, lfr) + 1`. An id below the last one accepted here is refused
-with 400 up front, rather than a block later on a stream this client may not be
-reading. Re-sending the **same** `rq` is the retry mechanism and stays accepted — see
-[Placing Orders](./websocket.md#placing-orders) for the at-most-once semantics.
+Request IDs (`rq`) follow one rule on both transports — a **new** order's `rq` must be
+greater than every `rq` the account has used, from any client; see **Request IDs** under
+[Placing Orders](./websocket.md#placing-orders). Two checks enforce it:
+
+- **Here, up front:** an `rq` below the highest one this endpoint has accepted from the
+  account is answered `400` `request id below last accepted for this account`, rather
+  than a block later on a stream this client may not be reading. IDs the exchange later
+  rejected still count; an **equal** `rq` passes, as re-sending the same `rq` is the
+  retry mechanism. The check is a convenience — the exchange remains the authority.
+- **At the exchange, a block later:** `rq <= lfr` is rejected with `sr: 32`
+  (`OrderDescIdTooLow`).
+
+`lfr` counts only requests that reached the exchange and can drop after an `sr: 32`, so
+it can be lower than IDs you have already sent: compute `rq = max(localCounter, lfr) + 1`
+with a counter that covers every `rq` sent, never `lfr + 1` alone.
 
 #### The last execution block over HTTP
 

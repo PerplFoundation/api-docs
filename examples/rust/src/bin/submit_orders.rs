@@ -126,6 +126,9 @@ impl Client {
 
     /// A zero status code acknowledges forwarding, not execution: the outcome is
     /// settled a block later. Poll the open orders until the request ID shows up.
+    /// Match on `rq` only to learn the order's `oid`, then track by `oid`: `rq` on an
+    /// order is the latest request that changed it, so after a fill it is the other
+    /// trader's. An order hit before the first poll is missed here (check order history).
     async fn await_order(&self, request_id: u64) -> Result<Option<Value>> {
         for _ in 0..10 {
             tokio::time::sleep(Duration::from_secs(1)).await;
@@ -185,8 +188,9 @@ async fn main() -> Result<()> {
     }
 
     let head_block = wallet["sn"].as_u64().unwrap_or(0);
-    // Request IDs must not decrease per account. Seed from `lfr`, the last
-    // request ID the exchange accepted for this account.
+    // Seeding from `lfr` is enough for one run. A long-running client must keep its
+    // own counter covering every ID it has sent, rejected ones included: `lfr` counts
+    // only requests that reached the exchange and can be lower (see websocket.md).
     let mut next_request_id = account["lfr"].as_u64().unwrap_or(0) + 1;
 
     // The market's configuration, for the decimals and the `lb` ceiling.
@@ -274,7 +278,7 @@ async fn main() -> Result<()> {
         order["oid"], order["p"], order["st"]
     );
 
-    // 4. Cancel it. One order is a batch of one.
+    // 4. Cancel it by `oid` — its `rq` may no longer be ours. One order is a batch of one.
     println!("cancelling:");
     client
         .submit_batch(&[json!({

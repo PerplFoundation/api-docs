@@ -13,7 +13,7 @@ type PerpetualID = number;   // uint32 - Perpetual ID (smart contract)
 type FeeLevelID = number;    // uint32 - Fee level ID
 type AccountID = number;     // uint64 - Trading account ID
 type OrderID = number;       // uint64 - Order ID
-type RequestID = number;     // uint64 - Request ID (idempotency key)
+type RequestID = number;     // uint64 - Request ID (idempotency key); send 1 … 2^53 − 1
 type PositionID = number;    // uint64 - Position ID
 type Decimals = number;      // uint8 - Decimal places
 type Fraction = number;      // uint32 - Fraction in hundredths
@@ -23,6 +23,10 @@ type Price = number;         // uint64 - Scaled price
 type SPrice = number;        // int64 - Signed scaled price
 type Size = number;          // uint64 - Scaled size
 ```
+
+Keep `RequestID` values within 1 … 9,007,199,254,740,991 (2⁵³ − 1) so every client of
+the account can continue the sequence — see **Request IDs** in
+[Placing Orders](./websocket.md#placing-orders).
 
 ## Scaling
 
@@ -159,17 +163,8 @@ interface Context {
   instances: ProtocolInstance[];
   tokens: Token[];
   markets: Market[];
-  rewards: {
-    builder_epoch_starts_at?: number;     // First builder epoch starts at, ms
-    builder_epoch_duration_sec?: number;  // Epoch duration, sec
-    builder_payout_share_bps?: number;    // Share of accrued builder fees paid out, bps (10000 = the whole fee)
-  };
 }
 ```
-
-`rewards` lists only the fields builders need. All three are absent while the builder
-payout program is not running — see
-[The epoch in flight](./rest-endpoints.md#the-epoch-in-flight).
 
 ---
 
@@ -281,8 +276,8 @@ applies to, so:
 interface Order {
   at: BlockTxLogTimestamp;  // Update timestamp
   c: BlockTxTimestamp;      // Creation timestamp
-  // Request ID is an user set ID for this Order, when using the API it is equivalent to a client_order_id with deduplication
-  // and must be monotonically increasing, for smart contract users it can be freely set to any value to identify the order
+  // Latest request that changed this order — after a fill it may be another account's. Take `oid`
+  // from the first update carrying your `rq`, then track by `oid`. Never seed your counter from it.
   rq: RequestID;
   mkt: MarketID;
   acc: AccountID;
@@ -474,7 +469,7 @@ without one.
 
 ```typescript
 interface OrderSpec {
-  rq: RequestID;    // Request ID — idempotency key, must not decrease per account
+  rq: RequestID;    // Request ID — greater than every rq the account has used; the same rq is a retry
   mkt: MarketID;
   acc: AccountID;
   oid?: OrderID;    // Order to change or cancel; omit for new orders
@@ -589,7 +584,7 @@ interface Position {
   mkt: MarketID;
   acc: AccountID;
   pid: PositionID;
-  rq: RequestID;
+  rq: RequestID;       // Latest request that changed this position — may be another account's
   oid: OrderID;
   st: PositionStatus;
   sr: PositionStatusReason;
@@ -709,7 +704,7 @@ interface Account {
   fr: boolean;      // Is frozen
   fw: boolean;      // Allows forwarding
   ft: number;       // Fee tier (uint8) — indexes MarketConfig.maker_fees / taker_fees
-  lfr: RequestID;   // Last forwarded request ID (use to seed `rq` generation)
+  lfr: RequestID;   // Last request ID that reached the exchange; can drop after an `sr: 32` — see Request IDs in websocket.md
   b: Amount;        // Balance
   lb: Amount;       // Locked balance
   h?: AccountEvent[];
@@ -725,7 +720,7 @@ interface AccountEvent {
   id: AccountID;
   et: AccountEventType;
   m?: MarketID;
-  r?: OrderID;      // Request ID
+  r?: RequestID;    // Request that caused the event — may be another account's (a fill against your order)
   o?: OrderID;
   p?: PositionID;
   a: Amount;        // Amount change
@@ -1016,11 +1011,10 @@ interface MakerMarketStats {
 }
 ```
 
-Fees are **gross** in the same sense as `f` elsewhere on the API — the exchange fee
-plus any builder fee charged on top
+Fees are **gross** — what the fill cost, including any builder fee charged on top of
+the exchange fee — consistent with `f` elsewhere on the API
 ([Reconciling what was charged](./integrations.md#reconciling-what-was-charged)).
-Unlike `Fill.f` they are never negative: maker rebates are not counted, so summing
-`Fill.f` over the same fills will not match when the wallet earned rebates.
+Never negative: a maker rebate is not charged as a fee.
 
 `f` counts both sides, so a fill where the wallet is both maker and taker counts
 twice. The averages are zero when nothing filled on that side.
@@ -1054,10 +1048,9 @@ to begin with; this is not a rounded percentage.
 - `sp` — measured only while you quoted both sides. Zero when you never quoted both
   sides inside the widest band.
 - `bd` / `ad` — either can be **negative**: a side quoted through the mark still
-  counts, and reads as the distance past it. They sum to `sp` only when you quoted
-  both sides throughout the window. Their difference is the inventory skew —
-  positive meaning the bid sits further from the mark than the ask, so the wallet
-  is leaning to sell.
+  counts, and reads as the distance past it. The two sum to `sp`, and their
+  difference is the inventory skew — positive meaning the bid sits further from the
+  mark than the ask, so the wallet is leaning to sell.
 
 Each figure is an average over the window **as a whole**, formed from totals summed
 across the days it covers. A busy day therefore weighs more than a quiet one, and

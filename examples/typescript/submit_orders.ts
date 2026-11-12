@@ -123,6 +123,9 @@ async function submitBatch(orders: OrderSpec[]): Promise<Status[]> {
 
 // A zero status code acknowledges forwarding, not execution: the outcome is
 // settled a block later. Poll the open orders until the request ID shows up.
+// Match on `rq` only to learn the order's `oid`, then track by `oid`: `rq` on an
+// order is the latest request that changed it, so after a fill it is the other
+// trader's. An order hit before the first poll is missed here (check order history).
 async function awaitOrder(requestId: number, attempts = 10): Promise<any | null> {
     for (let i = 0; i < attempts; i++) {
         await new Promise((r) => setTimeout(r, 1000));
@@ -150,8 +153,9 @@ async function main(): Promise<void> {
     }
 
     const headBlock: number = wallet.sn;
-    // Request IDs must not decrease per account. Seed from `lfr`, the last
-    // request ID the exchange accepted for this account.
+    // Seeding from `lfr` is enough for one run. A long-running client must keep its
+    // own counter covering every ID it has sent, rejected ones included: `lfr` counts
+    // only requests that reached the exchange and can be lower (see websocket.md).
     let nextRequestId: number = account.lfr + 1;
 
     const market = await getMarket(MARKET_ID);
@@ -211,7 +215,7 @@ async function main(): Promise<void> {
     }
     console.log(`order ${order.oid} is open at ${order.p} (status ${order.st})`);
 
-    // 4. Cancel it. One order is a batch of one.
+    // 4. Cancel it by `oid` — its `rq` may no longer be ours. One order is a batch of one.
     console.log('cancelling:');
     await submitBatch([
         {
