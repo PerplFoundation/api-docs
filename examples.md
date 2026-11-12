@@ -398,7 +398,7 @@ import * as ed from '@noble/ed25519';
 
 class TradingClient {
   private ws: WebSocket;
-  private requestId = 0;  // seeded from account.lfr on WalletSnapshot
+  private requestId = 0;  // highest rq sent or seen in lfr; never lowered
   private sn = 0;         // unique, non-zero per outbound frame; echoed as `cid` on mt: 3
   private accountId: number;
   private currentBlock: number = 0;
@@ -458,10 +458,16 @@ class TradingClient {
           break;
         case 19: // WalletSnapshot
           this.accountId = msg.as?.[0]?.id;
-          // rq = max(localCounter, account.lfr) + 1
+          // Math.max, never assignment: `lfr` can be lower than IDs already sent.
           this.requestId = Math.max(this.requestId, msg.as?.[0]?.lfr ?? 0);
           this.lastSn = msg.sn; // Initialize sequence tracking
           this.onUpdate('wallet', msg);
+          break;
+        case 21: // AccountUpdate — other clients of the account advance `lfr` too
+          if (msg.id === this.accountId) {
+            this.requestId = Math.max(this.requestId, msg.lfr ?? 0);
+          }
+          this.onUpdate('account', msg);
           break;
         case 23: // OrdersSnapshot
           this.onUpdate('orders', msg.d);
@@ -499,6 +505,7 @@ class TradingClient {
     }, 30000);
   }
 
+  // Advanced for every request, rejected ones included.
   private nextRequestId(): number {
     return ++this.requestId;
   }
@@ -710,7 +717,7 @@ for (const { order, status } of results) {
 }
 ```
 
-Four things to get right, none of which the HTTP status tells you:
+Five things to get right, none of which the HTTP status tells you:
 
 1. **A zero code acknowledges forwarding, not execution.** Whether the order posted,
    filled or was rejected is settled a block later — read it from the WebSocket order
@@ -722,30 +729,42 @@ Four things to get right, none of which the HTTP status tells you:
 4. **Every order costs a unit of the request-rate allowance.** A batch that outruns it
    is served up to that point, and the rest are answered `429` in their own positions
    and may be retried.
+5. **A refused parent leaves its trigger legs behind.** Legs whose `tr` names a parent
+   in the same batch are judged on their own and can be accepted while the parent is
+   refused. They never activate and are not cancelled automatically — check the
+   parent's status and cancel them yourself (see **Trigger Orders** in
+   [Placing Orders](./websocket.md#placing-orders)).
 
 ### Confirming an Order Landed
 
 ```typescript
 // The acknowledgement said "forwarded". Poll the snapshot for the request ID to
-// see what actually happened to it.
-async function awaitOrder(requestId: number, attempts = 10) {
+// learn the order's `oid`, then follow it by `oid`: `rq` on an order is the latest
+// request that changed it, so after a fill it carries the other trader's `rq`. An
+// order hit before the first poll is missed here — check the order history.
+async function awaitOrderId(requestId: number, attempts = 10): Promise<number | null> {
   for (let i = 0; i < attempts; i++) {
     await new Promise(r => setTimeout(r, 1000));
     const snapshot = await signedFetch('GET', '/v1/trading/orders').then(r => r.json());
     const order = snapshot.d.find(o => o.rq === requestId);
-    if (order) return order;
+    if (order) return order.oid;
   }
-  return null;  // never posted — check the order history for the failure reason
+  return null;  // not open — check the order history for the outcome
+}
+
+// Every later look-up goes by `oid`.
+async function getOpenOrder(orderId: number) {
+  const snapshot = await signedFetch('GET', '/v1/trading/orders').then(r => r.json());
+  return snapshot.d.find(o => o.oid === orderId) ?? null;  // null: no longer open
 }
 ```
 
-Request IDs (`rq`) are tracked per account. A **new** order's `rq` must be **strictly
-greater** than `lfr` on the account in the wallet snapshot — the last request ID the
-exchange forwarded — so take `rq = max(localCounter, lfr) + 1`; `rq <= lfr` is
-rejected as `OrderDescIdTooLow`, and an id below the last accepted is refused up front
-with `400`. Re-sending the **same** `rq` is the retry mechanism and stays accepted —
-see [Placing Orders](./websocket.md#placing-orders) for the full at-most-once rules,
-which are identical on both transports.
+A **new** order's `rq` must be greater than every `rq` the account has used, from any
+client: take `rq = max(localCounter, lfr) + 1` with a counter that covers every `rq`
+sent, rejected ones included — `lfr` can be lower than those. `rq <= lfr` is rejected
+as `sr: 32` (`OrderDescIdTooLow`); an `rq` below the highest already accepted is
+refused up front with `400`. Re-sending the **same** `rq` is a retry. The rules are
+identical on both transports — see [Placing Orders](./websocket.md#placing-orders).
 
 ---
 

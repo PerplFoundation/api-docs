@@ -344,7 +344,7 @@ replace.
 interface OrderRequest {
   mt: 22;
   sn?: number;         // Unique, non-zero — echoed as `cid` on the mt: 3 status
-  rq: number;          // Request ID (strictly increasing, API equivalent to client_order_id - enforced by smart contract only for API orders)
+  rq: number;          // Request ID — idempotency key, see Request IDs below
   mkt: number;         // Market ID
   acc: number;         // Account ID
   oid?: number;        // Order ID (for modify/cancel)
@@ -382,20 +382,65 @@ apart.
 
 `rq` (Request ID) is an idempotency key scoped per account. The server guarantees **at-most-once** execution per `rq`.
 
-The Request ID is equivalent to a client order id on non-dex exchanges (applicable only for orders sent via API, not for direct on-chain transactions).
+For API orders (not direct on-chain transactions) it plays the deduplication role of a
+client order ID on other exchanges — but it labels the **request**, not the order: the
+`rq` you later read on an order may not be yours (see **Request IDs on returned
+objects** below).
 
 Multiple requests via the API with the same Request ID only results in a single execution.
 
 For smart contract / SDK users placing non API orders the value maybe set to anything to identify the order and is non-unique.
 
-**Request ID generation**:
+**Request IDs**:
 
-`rq` must be strictly increasing. The server tracks the last processed ID as `lfr` on the Account object (in WalletSnapshot mt: 19 and AccountUpdate mt: 21).
+**A new order's `rq` must be greater than every `rq` your account has used, from any
+client. Re-sending the same `rq` is a retry, never a new order.**
 
-1. Seed local counter from `account.lfr` on connect to trading websocket
-2. For each order: `rq = max(localCounter, account.lfr) + 1`
+- **One sequence per account.** The web app, every API key and every script trading
+  the account share it; the exchange tracks it as `lfr` on the Account object
+  (mt: 19, mt: 21). A client that jumps ahead drags every other client with it.
+- **Stay within 1 … 9,007,199,254,740,991 (2⁵³ − 1).** Clients that hold numbers as
+  64-bit floats (JavaScript, many JSON parsers) cannot compute `lfr + 1` above 2⁵³,
+  and every client of the account must be able to continue the sequence.
+- **Advance by 1.** An `rq` counts as newer only if it is ahead of the last accepted
+  one by less than 2,147,483,648 (2³¹); a larger jump reads as going backwards and is
+  rejected with `sr: 32`. A timestamp is therefore not a request ID: `Date.now()`
+  fails on the first order after ~25 days without trading.
+- **`lfr` can drop.** It counts only requests that reached the exchange — a cancel
+  refused with `sr: 33` (`OrderDoesNotExist`) does not advance it — and it is reset
+  after an `sr: 32`, possibly below IDs you have already used.
+
+Keep a local counter that is never lowered:
+
+1. Seed it from `account.lfr` in the WalletSnapshot (mt: 19)
+2. For each order: `rq = max(localCounter, lfr) + 1`, `lfr` from the latest mt: 21,
+   and store `rq` back as `localCounter`
+3. Count **every** `rq` sent, rejected ones included; never re-derive the counter from
+   `lfr` alone. Re-using an ID never places a new order (over HTTP it is refused with
+   `400`, see [POST /v1/trading/orders](./rest-endpoints.md#post-apiv1tradingorders))
+
+```typescript
+let localCounter = 0;  // every rq this client has sent; never lowered
+let lfr = 0;           // account.lfr from the latest mt: 19 / mt: 21
+
+function nextRequestId(): number {
+  localCounter = Math.max(localCounter, lfr) + 1;
+  return localCounter;
+}
+```
 
 Submitting `rq <= lfr` fails with `sr: 32` (OrderDescIdTooLow).
+
+**Request IDs on returned objects**:
+
+`rq` on an `Order` or `Position` and `r` on an `AccountEvent` is the **latest request
+that changed the object** — not necessarily yours. When another account fills your
+resting order, the update for your order carries **their** `rq`. So:
+
+- never seed or advance your counter from `rq` or `r` on updates — only from `lfr`
+  and your own counter;
+- link a request to its order by the `oid` on the first update carrying your `rq`,
+  then track by `oid` — later updates may carry a different `rq`.
 
 **Retries**:
 
@@ -416,7 +461,7 @@ Client side is responsible for deduplication of these messages, processing only:
 | Scenario | Action |
 |----------|--------|
 | No status received yet, `lb` not expired | Retry with **same** `rq` |
-| `sr: 32` (OrderDescIdTooLow) | Retry **once** with new `rq` (common with multiple clients/tabs) |
+| `sr: 32` (OrderDescIdTooLow) | Retry **once** with `rq = max(localCounter, lfr) + 1`, `lfr` from the latest account update (common with multiple clients/tabs) |
 | Head block ≥ `lb`, no status received, no reconnections since posting | Retry with **new** `rq` |
 
 **Client-side deduplication**:
@@ -432,6 +477,8 @@ Multiple updates may arrive for a single `rq`:
 - `tp` + `tpc`: The order will not be posted until the market last price crosses the trigger price according to the condition (GTE or LTE)
 - `tr`: Links this trigger order to another request. When the linked request results in a trade, the trigger activates; when it fails, the trigger is cancelled. If the linked request places an order, this trigger links to that order — activating when it fills, cancelling when it is cancelled.
 - `lp`: Links the trigger order to a position. The trigger is cancelled when the position is closed or inverted.
+- **Cancelling a trigger order needs its `tp`.** A non-zero `tp` marks the cancel (`t: 5`) as a trigger-order operation; with `oid` alone it is taken for a book-order cancel and rejected with `sr: 33` (`OrderDoesNotExist`). Copy `tp`, `tpc` and `lp` from the order — see **Example - Cancel Trigger Order** below.
+- **A refused parent leaves its legs behind.** In a batch, a parent and its legs (`tr` = the parent's `rq`) are judged separately: the parent can be refused (e.g. `400`) while the legs are accepted. Such legs never activate and are **not** cancelled automatically — check the parent's status and cancel them yourself.
 
 **Order Types**:
 
@@ -577,7 +624,7 @@ const ttl = market.order_ttl_blocks; // From /api/v1/pub/context or mt: 8
 ws.send(JSON.stringify({
   mt: 22,
   sn: ++sn,                    // Echoed as `cid` on the mt: 3 status for this frame
-  rq: Date.now(),              // Unique request ID
+  rq: nextRequestId(),         // max(localCounter, lfr) + 1, see Request IDs
   mkt: 1,                      // BTC market (mainnet)
   acc: accountId,              // Your account ID
   t: 1,                        // OpenLong
@@ -598,12 +645,12 @@ ws.send(JSON.stringify({
 - `mnp` is omitted, or `0 <= mnp <= 65535` — send it only when the market default is not what you want (see **Negative PnL collateralization** above)
 - WebSocket is connected - Check `ws.readyState === WebSocket.OPEN`
 
-**Example - Cancel Order**:
+**Example - Cancel Order** (an order resting on the book):
 ```typescript
 ws.send(JSON.stringify({
   mt: 22,
   sn: ++sn,
-  rq: Date.now(),
+  rq: nextRequestId(),
   mkt: 1,
   acc: accountId,
   oid: orderIdToCancel,
@@ -612,6 +659,27 @@ ws.send(JSON.stringify({
   fl: 0,
   lv: 0,
   lb: currentBlock + ttl
+}));
+```
+
+**Example - Cancel Trigger Order** (stop / take-profit / stop-loss):
+```typescript
+// trigger: the Order from the orders snapshot (mt: 23) or an update (mt: 24)
+ws.send(JSON.stringify({
+  mt: 22,
+  sn: ++sn,
+  rq: nextRequestId(),
+  mkt: trigger.mkt,
+  acc: accountId,
+  oid: trigger.oid,
+  t: 5,                  // Cancel
+  tp: trigger.tp,        // Required — marks this as a trigger-order request
+  tpc: trigger.tpc,      // Copied from the order
+  lp: trigger.lp,        // Copied from the order, if set
+  s: 0,
+  fl: 0,
+  lv: 0,
+  lb: 0                  // As for any trigger order
 }));
 ```
 
@@ -716,7 +784,7 @@ interface Account {
   fr: boolean;      // Is frozen
   fw: boolean;      // Allows order forwarding ("One-Click Trading") — orders are rejected while false
   ft: number;       // Fee tier — indexes the market's maker_fees / taker_fees arrays
-  lfr: number;      // Last forwarded request ID (use to seed `rq` generation)
+  lfr: number;      // Last request ID that reached the exchange — see Request IDs
   b: string;        // Balance
   lb: string;       // Locked balance
   h?: AccountEvent[];  // Recent events

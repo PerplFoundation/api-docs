@@ -379,7 +379,7 @@ adds one field:
 ws.send(JSON.stringify({
   mt: 22,
   sn: 1,
-  rq: Date.now(),      // idempotency key, strictly increasing per account
+  rq: nextRequestId(), // max(localCounter, lfr) + 1, see Request IDs
   mkt: 1, acc: accountId,   // BTC (mainnet)
   t: 1,                // OpenLong
   p: 0, s: 10000,      // market order, 0.1 BTC
